@@ -104,7 +104,10 @@
 // Biblioteca no Arduino IDE:
 //   1 = NewLiquidCrystal (pasta NewLiquidCrystal_lib)
 //   0 = LiquidCrystal I2C por marcoschwartz / Frank de Brabander
+// PlatformIO pode sobrescrever via build_flags em platformio.ini
+#ifndef LCD_USE_NEW_LIQUIDCRYSTAL
 #define LCD_USE_NEW_LIQUIDCRYSTAL  1
+#endif
 
 // Mapeamento do chip PCF8574 no modulo I2C (quase todos os LCD 1602/2004):
 //   1 = YWROBOT / marcoschwartz (Rs=0 En=2 D4-D7=4-7 BL=3) — use este
@@ -133,9 +136,16 @@
 #define SETPOINT_PADRAO_C  38.0f
 #define SETPOINT_PASSO_C       0.25f   // giro normal
 #define SETPOINT_PASSO_FINO_C  0.005f  // botao pressionado + giro
+/** Apos parar de girar o encoder, espera este tempo para aplicar o alvo no PID */
+#define SETPOINT_APLICAR_PAUSA_MS  1500
 
-// Duplo clique no botao do encoder: liga/desliga a malha PID
+// Botao do encoder: duplo clique = standby; clique = religar; longo = reiniciar PID
 #define ENCODER_DUPLO_CLIQUE_MS    450
+#define ENCODER_CLIQUE_MIN_MS      50
+#define ENCODER_CLIQUE_MAX_MS      450   // clique curto (ate aqui; abaixo do longo)
+#define ENCODER_CLIQUE_LONGO_MS    800   // segurar sem girar
+/** Ao religar com clique: reinicia PID se (alvo - temp) > este valor [C] */
+#define STANDBY_RELIGA_REINICIA_DELTA_C  3.0f
 #define DISPLAY_MSG_TRANSICAO_MS   2500
 #define CONTROLE_INICIA_LIGADO     false
 

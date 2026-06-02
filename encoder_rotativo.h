@@ -1,7 +1,7 @@
 /**
  * encoder_rotativo.h — Encoder KY-040 (CLK, DT, SW)
  *
- * Giro normal / fino (botao+giro), clique simples, duplo clique no botao.
+ * Giro normal / fino (botao+giro), clique, duplo clique e clique longo no botao.
  */
 
 #ifndef ENCODER_ROTATIVO_H
@@ -20,11 +20,13 @@ public:
   bool consumirEventoRotacao();
   bool consumirEventoClique();
   bool consumirEventoDuploClique();
+  bool consumirEventoCliqueLongo();
 
 private:
   volatile int _delta;
   volatile bool _cliquePendente;
   volatile bool _duploCliquePendente;
+  volatile bool _cliqueLongoPendente;
   bool _rotacaoPendente;
   bool _aguardandoPossivelDuplo;
   float _setpoint;

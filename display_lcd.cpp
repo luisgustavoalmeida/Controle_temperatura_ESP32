@@ -26,6 +26,7 @@ void DisplayLCD::invalidarCache() {
   _ultimoEstado = ESTADO_INICIALIZANDO;
   _ultimaMsgTransicao = MSG_NENHUMA;
   _ultimoFrameAnimPid = 255;
+  _ultimoSetpointPendente = false;
 }
 
 void DisplayLCD::montarLinhaBuscandoTemp(char* buffer, size_t tam, int percentual,
@@ -56,7 +57,8 @@ void DisplayLCD::splashInicializacao() {
 
 void DisplayLCD::atualizar(float setpointC, float atualC, float saidaPid,
                            EstadoSistema estado, bool metaAtingida,
-                           bool controleAtivo, MensagemTransicao msgTransicao) {
+                           bool controleAtivo, MensagemTransicao msgTransicao,
+                           bool setpointPendenteNaMalha) {
   if (!_ok) {
     return;
   }
@@ -76,6 +78,7 @@ void DisplayLCD::atualizar(float setpointC, float atualC, float saidaPid,
       (estado != _ultimoEstado) || (metaAtingida != _ultimaMeta) ||
       (controleAtivo != _ultimoControleAtivo) ||
       (msgTransicao != _ultimaMsgTransicao) ||
+      (setpointPendenteNaMalha != _ultimoSetpointPendente) ||
       (buscandoTemperatura && frameAnimPid != _ultimoFrameAnimPid);
 
   if (!precisaAtualizar) {
@@ -90,6 +93,7 @@ void DisplayLCD::atualizar(float setpointC, float atualC, float saidaPid,
   _ultimoControleAtivo = controleAtivo;
   _ultimaMsgTransicao = msgTransicao;
   _ultimoFrameAnimPid = frameAnimPid;
+  _ultimoSetpointPendente = setpointPendenteNaMalha;
 
   char buffer[21];
 
@@ -103,7 +107,11 @@ void DisplayLCD::atualizar(float setpointC, float atualC, float saidaPid,
     escreverLinha(0, "Controle PID ON");
   }
 
-  snprintf(buffer, sizeof(buffer), "Alvo: %6.2f C", setpointC);
+  if (setpointPendenteNaMalha) {
+    snprintf(buffer, sizeof(buffer), "Alvo: %6.2f >", setpointC);
+  } else {
+    snprintf(buffer, sizeof(buffer), "Alvo: %6.2f C", setpointC);
+  }
   escreverLinha(1, buffer);
 
   if (estado == ESTADO_SENSOR_ERRO) {

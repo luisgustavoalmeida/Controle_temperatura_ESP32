@@ -19,9 +19,8 @@ void Buzzer::iniciar() {
 }
 
 void Buzzer::iniciarPadrao(BuzzerPadrao padrao) {
-  // Não interrompe clique se já estiver tocando outra coisa longa
-  if (_tocando && padrao == BUZZ_CLIQUE) {
-    return;
+  if (padrao == BUZZ_CLIQUE && _tocando) {
+    noTone(PIN_BUZZER);
   }
   _padraoAtual = padrao;
   _faseSequencia = 0;
@@ -77,7 +76,7 @@ uint16_t Buzzer::frequenciaHz(uint8_t indiceNota, BuzzerPadrao padrao) {
 uint16_t Buzzer::duracaoMs(uint8_t indiceNota, BuzzerPadrao padrao) {
   (void)indiceNota;
   switch (padrao) {
-    case BUZZ_CLIQUE: return 50;
+    case BUZZ_CLIQUE: return 30;
     case BUZZ_CONFIRMACAO: return 100;
     case BUZZ_META_ATINGIDA: return 120;
     case BUZZ_FORA_DA_META: return 140;

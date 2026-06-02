@@ -35,6 +35,7 @@ void EncoderRotativo::iniciar() {
   _delta = 0;
   _cliquePendente = false;
   _duploCliquePendente = false;
+  _cliqueLongoPendente = false;
   _rotacaoPendente = false;
   _aguardandoPossivelDuplo = false;
   _ultimoRotacaoMs = 0;
@@ -74,15 +75,23 @@ void EncoderRotativo::atualizar() {
 
   if (!botao && _botaoEstavaPressionado) {
     unsigned long duracao = agora - _millisBotaoPressionado;
-    if (!_giroComBotaoPressionado && duracao >= 50 && duracao < 500) {
-      if (_aguardandoPossivelDuplo &&
-          (agora - _millisUltimoSoltarBotao) < ENCODER_DUPLO_CLIQUE_MS) {
-        _duploCliquePendente = true;
+    if (!_giroComBotaoPressionado && duracao >= ENCODER_CLIQUE_MIN_MS) {
+      if (duracao >= ENCODER_CLIQUE_LONGO_MS) {
+        _cliqueLongoPendente = true;
         _aguardandoPossivelDuplo = false;
         _cliquePendente = false;
+      } else if (duracao <= ENCODER_CLIQUE_MAX_MS) {
+        if (_aguardandoPossivelDuplo &&
+            (agora - _millisUltimoSoltarBotao) < ENCODER_DUPLO_CLIQUE_MS) {
+          _duploCliquePendente = true;
+          _aguardandoPossivelDuplo = false;
+          _cliquePendente = false;
+        } else {
+          _aguardandoPossivelDuplo = true;
+          _millisUltimoSoltarBotao = agora;
+        }
       } else {
-        _aguardandoPossivelDuplo = true;
-        _millisUltimoSoltarBotao = agora;
+        _aguardandoPossivelDuplo = false;
       }
     } else {
       _aguardandoPossivelDuplo = false;
@@ -146,6 +155,16 @@ bool EncoderRotativo::consumirEventoDuploClique() {
     return false;
   }
   _duploCliquePendente = false;
+  _aguardandoPossivelDuplo = false;
+  _ultimoCliqueMs = millis();
+  return true;
+}
+
+bool EncoderRotativo::consumirEventoCliqueLongo() {
+  if (!_cliqueLongoPendente) {
+    return false;
+  }
+  _cliqueLongoPendente = false;
   _aguardandoPossivelDuplo = false;
   _ultimoCliqueMs = millis();
   return true;

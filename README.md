@@ -110,7 +110,7 @@ Todos os módulos têm comentários em português no cabeçalho e nas funções 
 | `sensor_ds18b20.*` | DS18B20 assíncrono (12 bits, ~750 ms) |
 | `lcd_i2c_compat.h` | Compatibilidade e scan I2C (NewLiquidCrystal / marcoschwartz) |
 | `display_lcd.*` | Layout das 4 linhas e estados |
-| `encoder_rotativo.*` | Setpoint e eventos (giro, clique, duplo clique) |
+| `encoder_rotativo.*` | Setpoint e eventos (giro, clique, duplo, clique longo) |
 | `buzzer.*` | Feedback sonoro |
 
 ### Fluxo do `loop()`
@@ -143,7 +143,9 @@ Linha 0: **Controle PID ON/OFF** ou mensagens *Ligando/Desligando Malha PID...* 
 
 | Ação | Comportamento |
 |------|----------------|
-| Girar encoder | Passo **0,25 °C** (`SETPOINT_PASSO_C`) |
+| Girar encoder | Passo **0,25 °C** (`SETPOINT_PASSO_C`); LCD atualiza na hora |
+| Parar de girar | Após **600 ms** (`SETPOINT_APLICAR_PAUSA_MS`) o alvo entra no PID |
+| Alvo pendente no LCD | Linha `Alvo: XX.XX >` (sem `C`) até aplicar na malha |
 | Segurar botão + girar | Passo fino **0,005 °C** (`SETPOINT_PASSO_FINO_C`) |
 | Faixa | **10,0** a **45,0 °C** |
 | Valor inicial | **38,0 °C** (`SETPOINT_PADRAO_C`) |
@@ -152,11 +154,13 @@ Linha 0: **Controle PID ON/OFF** ou mensagens *Ligando/Desligando Malha PID...* 
 
 | Ação | Comportamento |
 |------|----------------|
-| **Duplo clique** no botão | Liga/desliga a malha (`ENCODER_DUPLO_CLIQUE_MS` = 450 ms) |
-| **Clique simples** (malha ligada) | Reinicia o PID (zera integral) |
-| Boot | Malha **desligada** por padrão (`CONTROLE_INICIA_LIGADO = false`) — duplo clique para ligar |
+| **Duplo clique** (malha ligada) | Standby: potenciômetro 0 %, malha **pausada** (OUT/integral preservados) |
+| **Clique simples** (malha desligada) | Religa e aplica a OUT memorizada |
+| **Clique simples** (desligada e temp. muito abaixo do alvo) | Religa com `pid.reiniciar()` se `SP − PV > STANDBY_RELIGA_REINICIA_DELTA_C` (default 3 °C) |
+| **Clique longo** (~800 ms, sem girar) | Reinicia o PID (`ENCODER_CLIQUE_LONGO_MS`) |
+| Boot | Malha **desligada** por padrão (`CONTROLE_INICIA_LIGADO = false`) — **clique simples** para ligar |
 
-Com a malha desligada: saída PID em mínimo, potenciômetro no passo 0.
+Em standby o potenciômetro fica em 0 %; a saída da malha (`saidaPid`) permanece na RAM até religar.
 
 ### Buzzer
 
@@ -165,7 +169,7 @@ Com a malha desligada: saída PID em mínimo, potenciômetro no passo 0.
 | Entrou na faixa do alvo (± `HISTERESE_BUZZER_C`, default 0,2 °C) | 3 tons ascendentes |
 | Saiu da faixa (tinha atingido e afastou) | 3 tons descendentes |
 | Rotação do encoder | Clique curto |
-| Duplo clique / clique com malha ligada | Confirmação |
+| Duplo clique / clique (religar) / clique longo | Confirmação |
 
 ### Ajustes em `config.h`
 
@@ -191,6 +195,6 @@ Em **falha do sensor** ou leitura inválida: wiper no **mínimo**, PID reiniciad
 1. LCD — splash *Controle Temperatura* / *ESP32 + PID*; depois linhas de operação.
 2. DS18B20 — temperatura coerente na linha *Atual*.
 3. Encoder — limites 10–45 °C, passos fino/grosso, beeps.
-4. Duplo clique — *Controle PID OFF* → ON; potência 0 % quando off.
+4. Duplo clique — standby (pot. 0 %); clique simples religa com OUT preservada.
 5. X9C104 — `%` na linha 4 acompanha o PID (e `[MALHA]` na serial se debug ativo).
 6. Malha fechada — carga térmica controlada (água); buzzer na entrada/saída da faixa do alvo.

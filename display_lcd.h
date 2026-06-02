@@ -27,7 +27,8 @@ public:
   void splashInicializacao();
 
   void atualizar(float setpointC, float atualC, float saidaPid, EstadoSistema estado,
-                 bool metaAtingida, bool controleAtivo, MensagemTransicao msgTransicao);
+                 bool metaAtingida, bool controleAtivo, MensagemTransicao msgTransicao,
+                 bool setpointPendenteNaMalha);
 
   void invalidarCache();
 
@@ -41,6 +42,7 @@ private:
   bool _ultimoControleAtivo;
   MensagemTransicao _ultimaMsgTransicao;
   uint8_t _ultimoFrameAnimPid;
+  bool _ultimoSetpointPendente;
 
   void escreverLinha(uint8_t linha, const char* texto);
   static void montarLinhaBuscandoTemp(char* buffer, size_t tam, int percentual,
