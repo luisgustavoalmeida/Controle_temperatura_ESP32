@@ -1,0 +1,60 @@
+# =============================================================================
+# Controle_temperatura_ESP32 — artefatos de build e ambiente local
+# =============================================================================
+
+# --- PlatformIO (raiz e testes_hardware/*/ ) ---
+.pio/
+**/.pio/
+
+# --- Arduino IDE / arduino-cli ---
+build/
+**/build/
+*.hex
+*.elf
+*.map
+*.bin
+*.eep
+*.lss
+*.sym
+*.su
+*.d
+
+# --- Binários e objetos soltos ---
+*.o
+*.a
+*.out
+
+# --- VS Code / Cursor (caminhos e caches por máquina) ---
+.vscode/.browse.c_cpp.db*
+.vscode/ipch/
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/tasks.json
+*.code-workspace
+
+# --- Cursor (estado local da sessão) ---
+.cursor/
+
+# --- Logs e temporários ---
+*.log
+*.tmp
+*~
+*.swp
+*.swo
+
+# --- Windows ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# --- Segredos (Wi-Fi, credenciais — se criar no futuro) ---
+.env
+.env.*
+secrets.h
+wifi_config.h
