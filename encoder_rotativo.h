@@ -27,7 +27,7 @@ private:
   volatile bool _cliquePendente;
   volatile bool _duploCliquePendente;
   volatile bool _cliqueLongoPendente;
-  bool _rotacaoPendente;
+  int _passosGiroPendentes;
   bool _aguardandoPossivelDuplo;
   float _setpoint;
   unsigned long _ultimoRotacaoMs;
@@ -36,6 +36,7 @@ private:
   bool _botaoEstavaPressionado;
   unsigned long _millisBotaoPressionado;
   bool _giroComBotaoPressionado;
+  int _acumuladorDetente;
 
   static void isrEncoder();
 };

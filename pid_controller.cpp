@@ -1,17 +1,16 @@
 /**
  * pid_controller.cpp — Implementação do PID
  *
- * Erro = setpoint - medida (queremos aquecer se medida < setpoint).
- * A saída alta aumenta potência via X9C104S.
+ * Erro = setpoint - medida. Saída alta → mais potência no chuveiro (TPL0501).
  */
 
 #include "pid_controller.h"
 #include <math.h>
 
 ControladorPID::ControladorPID()
-    : _kp(PID_KP),
-      _ki(PID_KI),
-      _kd(PID_KD),
+    : _kp(PID_GANHO_KP),
+      _ki(PID_GANHO_KI),
+      _kd(PID_GANHO_KD),
       _saidaMin(PID_SAIDA_MIN),
       _saidaMax(PID_SAIDA_MAX),
       _integral(0.0f),

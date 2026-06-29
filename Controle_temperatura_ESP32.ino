@@ -6,11 +6,11 @@
  * O que este firmware faz:
  *   1. Lê a temperatura da água (sensor DS18B20).
  *   2. O usuário escolhe a temperatura desejada no encoder rotativo.
- *   3. PID calcula OUT (0..1); esse valor comanda o X9C104S a cada passo (~100 ms).
+ *   3. PID OUT 0..1 → passos TPL0501 via SPI; atuador a cada ciclo PID.
  *   4. A malha nao pausa na meta: regulacao continua (histerese so no buzzer).
  *   5. Duplo clique = standby (pot. 0, malha preservada); clique = religar; longo = reiniciar PID.
  *
- * Ganhos PID (projeto Malha_PID_temperatura): Kp=0,032  Ki=0,002  Kd=0,015
+ * Ganhos PID: ver PID_GANHO_* em config.h
  *
  * O loop() NÃO usa delay() — cada tarefa roda em seu próprio intervalo (ms).
  *
@@ -22,7 +22,7 @@
 #include "config.h"
 #include "pid_controller.h"
 #include "potenciometro_map.h"
-#include "x9c104s.h"
+#include "atuador_potenciometro.h"
 #include "sensor_ds18b20.h"
 #include "display_lcd.h"
 #include "encoder_rotativo.h"
@@ -32,7 +32,7 @@
 // Módulos de hardware (um objeto por periférico)
 // =============================================================================
 ControladorPID pid;           // Malha de controle
-X9C104S potenciometro;        // Atuador (potência do chuveiro)
+AtuadorPotenciometro potenciometro;  // Atuador (1× ou 2× TPL0501)
 SensorDS18B20 sensorTemp;     // Entrada (temperatura)
 DisplayLCD display;           // Saída visual
 EncoderRotativo encoder;      // Entrada do usuário (setpoint)
@@ -43,22 +43,21 @@ Buzzer buzzer;                // Saída sonora
 // =============================================================================
 float temperaturaBruta = NAN;      // Última leitura direta do DS18B20 [°C]
 float temperaturaFiltrada = NAN;   // Média móvel (menos ruído) [°C]
-float saidaPid = 0.0f;             // Saída do PID: 0,0 = mín potência, 1,0 = máx
-float setpointEncoder = SETPOINT_PADRAO_C;  // Alvo no encoder (LCD imediato)
-float setpointMalha = SETPOINT_PADRAO_C;    // Alvo aplicado ao PID
+float saidaPid = 0.0f;             // PID OUT 0..1 → potência (1=máx); passo via escala ideal 150 kΩ
+float setpointEncoder = ALVO_TEMP_PADRAO_C;
+float setpointMalha = ALVO_TEMP_PADRAO_C;
 bool setpointPendenteNaMalha = false;
 unsigned long momentoUltimoGiroEncoder = 0;
 
 bool metaAtingida = false;
 bool estavaNaMeta = false;
 
-bool controleMalhaAtivo = CONTROLE_INICIA_LIGADO;
+bool controleMalhaAtivo = MALHA_INICIA_ATIVA;
 MensagemTransicao msgTransicao = MSG_NENHUMA;
 unsigned long msgTransicaoAteMs = 0;
 
-// Filtro de temperatura: guarda as últimas N leituras para calcular média
-#define FILTRO_TEMP_N  3
-float historicoTemp[FILTRO_TEMP_N];
+// Filtro de temperatura — tamanho em FILTRO_TEMP_AMOSTRAS (config.h)
+float historicoTemp[FILTRO_TEMP_AMOSTRAS];
 uint8_t indiceHistorico = 0;
 
 // =============================================================================
@@ -68,6 +67,10 @@ unsigned long momentoUltimoLoopRapido = 0;
 unsigned long momentoUltimoSensor = 0;
 unsigned long momentoUltimoPid = 0;
 unsigned long momentoUltimoLcd = 0;
+
+/** Histerese do atuador: último OUT aplicado no TPL0501 (−1 = nunca aplicou). */
+float saidaPidUltimoAplicado = -1.0f;
+unsigned long momentoUltimoAjustePot = 0;
 
 // (Conversão DS18B20: estado interno em sensor_ds18b20.cpp — não bloqueia o loop)
 
@@ -86,11 +89,11 @@ void aplicarFiltroTemperatura(float novaLeituraC) {
   }
 
   historicoTemp[indiceHistorico] = novaLeituraC;
-  indiceHistorico = (indiceHistorico + 1) % FILTRO_TEMP_N;
+  indiceHistorico = (indiceHistorico + 1) % FILTRO_TEMP_AMOSTRAS;
 
   float soma = 0.0f;
   int quantidadeValida = 0;
-  for (int i = 0; i < FILTRO_TEMP_N; i++) {
+  for (int i = 0; i < FILTRO_TEMP_AMOSTRAS; i++) {
     if (!isnan(historicoTemp[i])) {
       soma += historicoTemp[i];
       quantidadeValida++;
@@ -105,13 +108,18 @@ void aplicarFiltroTemperatura(float novaLeituraC) {
 // Segurança e estado do sistema
 // -----------------------------------------------------------------------------
 
+/** Alvo usado no buzzer de meta: encoder enquanto ajusta, malha quando estavel. */
+float alvoMetaBuzzer() {
+  return setpointPendenteNaMalha ? setpointEncoder : setpointMalha;
+}
+
 /** true quando a temperatura filtrada está perto o suficiente do alvo */
 bool temperaturaAtingiuMeta() {
   if (isnan(temperaturaFiltrada)) {
     return false;
   }
-  float diferenca = fabsf(temperaturaFiltrada - setpointMalha);
-  return (diferenca <= HISTERESE_BUZZER_C);
+  float diferenca = fabsf(temperaturaFiltrada - alvoMetaBuzzer());
+  return (diferenca <= BUZZER_HISTERESE_C);
 }
 
 /**
@@ -134,14 +142,37 @@ void avisarMudancaDeMeta(bool naMetaAgora) {
  * Modo seguro: sensor falhou ou leitura inválida.
  * Coloca potência mínima no chuveiro e zera o estado interno do PID.
  */
-/** OUT (0..1) e o unico comando da malha para o X9C104S. */
+/** Registra instante e OUT do último comando enviado ao TPL0501. */
+void registrarAplicacaoPot(float outAplicado) {
+  saidaPidUltimoAplicado = outAplicado;
+  momentoUltimoAjustePot = millis();
+}
+
+/** OUT (0..1) → TPL0501: salto SPI direto a cada atualização do PID. */
 void aplicarSaidaPidNoPotenciometro() {
-  potenciometro.definirSaidaNormalizada(saidaPid);
+  potenciometro.definirSaidaNormalizadaRapida(saidaPid);
+  registrarAplicacaoPot(saidaPid);
 }
 
 /** Standby: potencia 0 % sem alterar saidaPid (memoria da malha). */
 void aplicarPotenciometroStandby() {
-  potenciometro.definirSaidaNormalizada(PID_SAIDA_MIN);
+  potenciometro.definirSaidaNormalizadaRapida(PID_SAIDA_MIN);
+  registrarAplicacaoPot(PID_SAIDA_MIN);
+}
+
+/** true se passou PERIODO_ATUADOR_POT_MS e o OUT do PID mudou. */
+bool deveAplicarSaidaPidNoPotenciometro(unsigned long instanteAtualMs) {
+  if (saidaPidUltimoAplicado < -0.5f) {
+    return true;
+  }
+  if ((instanteAtualMs - momentoUltimoAjustePot) < PERIODO_ATUADOR_POT_MS) {
+    return false;
+  }
+#if POT_HISTERESIS_SAIDA_ATIVA
+  return (fabsf(saidaPid - saidaPidUltimoAplicado) > POT_HISTERESIS_SAIDA_LIMIAR);
+#else
+  return (fabsf(saidaPid - saidaPidUltimoAplicado) > 0.0001f);
+#endif
 }
 
 /** true se a temperatura esta bem abaixo do alvo (religar deve reiniciar PID). */
@@ -166,7 +197,7 @@ void desligarMalhaControle() {
   estavaNaMeta = false;
   metaAtingida = false;
   msgTransicao = MSG_DESATIVANDO_MALHA;
-  msgTransicaoAteMs = millis() + DISPLAY_MSG_TRANSICAO_MS;
+  msgTransicaoAteMs = millis() + LCD_MSG_TRANSICAO_MS;
   display.invalidarCache();
   Serial.print(F("[CTRL] Standby — pot. 0 | OUT mem="));
   Serial.println(saidaPid, 3);
@@ -183,7 +214,7 @@ void ligarMalhaControle(bool reiniciarPid) {
   estavaNaMeta = false;
   metaAtingida = false;
   msgTransicao = MSG_ATIVANDO_MALHA;
-  msgTransicaoAteMs = millis() + DISPLAY_MSG_TRANSICAO_MS;
+  msgTransicaoAteMs = millis() + LCD_MSG_TRANSICAO_MS;
   display.invalidarCache();
   Serial.print(F("[CTRL] Malha ON | reinicia="));
   Serial.print(reiniciarPid ? '1' : '0');
@@ -209,7 +240,7 @@ void atualizarMensagemTransicao() {
   }
 }
 
-#if SERIAL_DEBUG_MALHA
+#if SERIAL_DEPURAR_MALHA
 /** Uma linha por passo do PID (~PERIODO_PID_MS) — somente malha de controle. */
 void imprimirSerialMalha() {
   Serial.print(F("[MALHA]"));
@@ -232,9 +263,29 @@ void imprimirSerialMalha() {
   Serial.print(F(" D="));
   Serial.print(pid.ultimoTermoD(), 4);
   Serial.print(F(" OUT="));
-  Serial.print(saidaPid, 3);
+  Serial.print(saidaPid, 4);
+  Serial.print(F(" PCT_CMD="));
+  Serial.print(potenciometro.potenciaAlvoPercentual(), 3);
+  Serial.print(F(" PCT="));
+  Serial.print(potenciometro.potenciaAtualPercentual(), 3);
+  if (fabsf(potenciometro.potenciaAtualPercentual() / 100.0f - saidaPid)
+      > SERIAL_TOLERANCIA_ERRO_POT) {
+    Serial.print(F(" dPOT="));
+    Serial.print(potenciometro.potenciaAtualPercentual() - saidaPid * 100.0f, 2);
+  }
   Serial.print(F(" POT="));
-  Serial.print(potenciometro.passoAtual());
+  Serial.print(potenciometro.passoAtualA());
+#if POT_USA_DOIS_CHIPS
+  Serial.print(F("/"));
+  Serial.print(potenciometro.passoAtualB());
+  if (potenciometro.passoAtualA() != potenciometro.passoAlvoA()
+      || potenciometro.passoAtualB() != potenciometro.passoAlvoB()) {
+    Serial.print(F(" ALVO="));
+    Serial.print(potenciometro.passoAlvoA());
+    Serial.print(F("/"));
+    Serial.print(potenciometro.passoAlvoB());
+  }
+#endif
   Serial.print(F(" META="));
   Serial.println(metaAtingida ? 1 : 0);
 }
@@ -245,7 +296,7 @@ void atualizarSetpointMalhaSeEstavel() {
   if (!setpointPendenteNaMalha) {
     return;
   }
-  if (millis() - momentoUltimoGiroEncoder < SETPOINT_APLICAR_PAUSA_MS) {
+  if (millis() - momentoUltimoGiroEncoder < ALVO_TEMP_PAUSA_MS) {
     return;
   }
   if (fabsf(setpointMalha - setpointEncoder) < 0.001f) {
@@ -254,7 +305,7 @@ void atualizarSetpointMalhaSeEstavel() {
   }
   setpointMalha = setpointEncoder;
   setpointPendenteNaMalha = false;
-  estavaNaMeta = false;
+  estavaNaMeta = temperaturaAtingiuMeta();
   display.invalidarCache();
   Serial.print(F("[SP] Alvo aplicado na malha: "));
   Serial.println(setpointMalha, 2);
@@ -284,16 +335,16 @@ EstadoSistema obterEstadoParaDisplay() {
 void tarefaInterfaceUsuario() {
   encoder.atualizar();
   float spEncoder = encoder.setpointC();
-  bool girou = encoder.consumirEventoRotacao();
+  bool girou = false;
+  while (encoder.consumirEventoRotacao()) {
+    buzzer.tocarClique();
+    girou = true;
+  }
 
   if (girou || fabsf(spEncoder - setpointEncoder) > 0.001f) {
     setpointEncoder = spEncoder;
     momentoUltimoGiroEncoder = millis();
     setpointPendenteNaMalha = true;
-    if (girou) {
-      buzzer.tocarClique();
-      estavaNaMeta = false;
-    }
   }
 
   atualizarSetpointMalhaSeEstavel();
@@ -347,12 +398,20 @@ void tarefaLeituraSensor() {
 }
 
 /**
- * Tarefa do PID (~100 ms): calcula potência e comanda o X9C104S.
+ * Tarefa do PID (~PERIODO_PID_MS): calcula OUT; atuador ajusta a cada
+ * PERIODO_ATUADOR_POT_MS quando o par (A,B) alvo muda (sem histerese de OUT).
  */
 void tarefaMalhaPid(unsigned long instanteAtualMs) {
   if (!controleMalhaAtivo) {
-    aplicarPotenciometroStandby();
-#if SERIAL_DEBUG_MALHA
+    if (fabsf(saidaPidUltimoAplicado - PID_SAIDA_MIN) > 0.0001f
+        || potenciometro.passoAtualA() != POT_PASSOS_MAX
+#if POT_USA_DOIS_CHIPS
+        || potenciometro.passoAtualB() != POT_PASSOS_MAX
+#endif
+    ) {
+      aplicarPotenciometroStandby();
+    }
+#if SERIAL_DEPURAR_MALHA
     imprimirSerialMalha();
 #endif
     return;
@@ -360,7 +419,7 @@ void tarefaMalhaPid(unsigned long instanteAtualMs) {
 
   if (!sensorTemp.sensorOk() || isnan(temperaturaFiltrada)) {
     entrarModoSeguroPorFalhaSensor();
-#if SERIAL_DEBUG_MALHA
+#if SERIAL_DEPURAR_MALHA
     imprimirSerialMalha();
 #endif
     return;
@@ -369,19 +428,24 @@ void tarefaMalhaPid(unsigned long instanteAtualMs) {
   float tempoSegundos = instanteAtualMs / 1000.0f;
   atualizarSetpointMalhaSeEstavel();
   saidaPid = pid.passo(setpointMalha, temperaturaFiltrada, tempoSegundos);
-  aplicarSaidaPidNoPotenciometro();
+  if (deveAplicarSaidaPidNoPotenciometro(instanteAtualMs)) {
+    aplicarSaidaPidNoPotenciometro();
+    display.invalidarCache();
+  }
 
   metaAtingida = temperaturaAtingiuMeta();
   avisarMudancaDeMeta(metaAtingida);
 
-#if SERIAL_DEBUG_MALHA
+#if SERIAL_DEPURAR_MALHA
   imprimirSerialMalha();
 #endif
 }
 
-/** Tarefa do LCD (~300 ms): atualiza as 4 linhas se algo mudou */
+/** Tarefa do LCD (~100 ms): linha 3 = OUT do PID em % (comando da malha). */
 void tarefaAtualizarDisplay() {
-  display.atualizar(setpointEncoder, temperaturaFiltrada, saidaPid,
+  float potCmd = controleMalhaAtivo ? saidaPid : 0.0f;
+  display.atualizar(setpointEncoder, temperaturaFiltrada, potCmd,
+                    potenciometro.passoAtualA(), potenciometro.passoAtualB(),
                     obterEstadoParaDisplay(), metaAtingida, controleMalhaAtivo,
                     msgTransicao, setpointPendenteNaMalha);
 }
@@ -391,11 +455,39 @@ void tarefaAtualizarDisplay() {
 // -----------------------------------------------------------------------------
 
 void setup() {
-  Serial.begin(SERIAL_BAUD);
+  Serial.begin(SERIAL_VELOCIDADE);
   delay(500);
   Serial.println(F("=== Inicio: controle chuveiro ESP32 ==="));
-#if SERIAL_DEBUG_MALHA
-  Serial.println(F("[MALHA] Serial: SP PV ERR P I D OUT POT META ACT (a cada PID)"));
+  Serial.print(F("[MAP] Modo "));
+  Serial.print(potenciometroModoRedeNome());
+  if (reqParaleloEstaAtivo()) {
+    Serial.print(F(" | R_par "));
+    Serial.print(RESISTOR_PARALELO_KOHM, 0);
+    Serial.print(F(" kΩ"));
+  }
+  Serial.print(F(" | R_serie max "));
+  Serial.print(rpotSerieMaximaKohm(), 1);
+  Serial.print(F(" kΩ | ideal "));
+  Serial.print(REQ_IDEAL_POTENCIA_MIN_KOHM, 0);
+  Serial.print(F(" kΩ (0% ref) | min alcanç. ~ "));
+  Serial.print(potenciaMinimaAlcancavelPercentual(), 1);
+  Serial.println(F(" %"));
+#if POT_USA_DOIS_CHIPS
+  Serial.println(F("[MAP] 2 chips: SPI compartilhado, CS_A/CS_B separados"));
+#endif
+  Serial.println(F("[MAP] Escala potencia: Req linear"));
+#if SERIAL_DEPURAR_MALHA
+  Serial.print(F("[MALHA] PID "));
+  Serial.print(PERIODO_PID_MS);
+  Serial.print(F("ms | pot "));
+  Serial.print(PERIODO_ATUADOR_POT_MS);
+  Serial.print(F("ms dOUT>"));
+#if POT_HISTERESIS_SAIDA_ATIVA
+  Serial.print(POT_HISTERESIS_SAIDA_LIMIAR, 3);
+#else
+  Serial.print(F("passo"));
+#endif
+  Serial.println(F(" | escada A/B intercalada"));
 #endif
 
   // Inicialização na ordem: feedback visual → entradas → atuador → sensor → PID
@@ -410,10 +502,19 @@ void setup() {
   setpointPendenteNaMalha = false;
 
   potenciometro.iniciar();
-  potenciometro.reiniciarParaMinimo();
-  Serial.println(F("[X9C] Wiper no minimo (potencia minima)"));
 
-  for (int i = 0; i < FILTRO_TEMP_N; i++) {
+  if (!MALHA_INICIA_ATIVA) {
+    controleMalhaAtivo = false;
+    Serial.println(F("[POT] Calculando posicao standby..."));
+    potenciometro.definirSaidaNormalizadaRapida(PID_SAIDA_MIN);
+    registrarAplicacaoPot(PID_SAIDA_MIN);
+    Serial.println(F("[POT] Standby — potencia 0 % (inicializacao rapida)"));
+  } else {
+    potenciometro.reiniciarParaMinimo();
+    Serial.println(F("[POT] Wipers no minimo (potencia maxima)"));
+  }
+
+  for (int i = 0; i < FILTRO_TEMP_AMOSTRAS; i++) {
     historicoTemp[i] = NAN;
   }
 
@@ -421,8 +522,7 @@ void setup() {
 
   pid.reiniciar();
 
-  if (!CONTROLE_INICIA_LIGADO) {
-    desligarMalhaControle();
+  if (!MALHA_INICIA_ATIVA) {
     msgTransicao = MSG_NENHUMA;
   }
 
@@ -434,7 +534,7 @@ void setup() {
 
   buzzer.tocarConfirmacao();
   delay(800);  // único delay longo: tempo para o usuário ver o splash no LCD
-  display.atualizar(setpointEncoder, NAN, 0.0f, obterEstadoParaDisplay(), false,
+  display.atualizar(setpointEncoder, NAN, 0.0f, 0, 0, obterEstadoParaDisplay(), false,
                     controleMalhaAtivo, msgTransicao, setpointPendenteNaMalha);
 }
 

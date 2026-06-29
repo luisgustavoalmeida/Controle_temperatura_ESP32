@@ -1,26 +1,25 @@
 /**
- * buzzer.cpp — Máquina de estados para tocar melodias sem delay()
+ * buzzer.cpp — Sequências não bloqueantes (tone/noTone)
  *
- * Cada nota usa dois passos: ligar tom (tone) e silenciar (noTone).
- * _faseSequencia avança até quantidadeNotas * 2.
+ * Pino: PINO_BUZZER (config.h). Chame atualizar() a cada PERIODO_LOOP_MS.
  */
 
 #include "buzzer.h"
 #include "config.h"
 
 void Buzzer::iniciar() {
-  pinMode(PIN_BUZZER, OUTPUT);
-  digitalWrite(PIN_BUZZER, LOW);
+  pinMode(PINO_BUZZER, OUTPUT);
+  digitalWrite(PINO_BUZZER, LOW);
   _padraoAtual = BUZZ_NENHUM;
   _faseSequencia = 0;
   _proximaAcaoMs = 0;
   _tocando = false;
-  noTone(PIN_BUZZER);
+  noTone(PINO_BUZZER);
 }
 
 void Buzzer::iniciarPadrao(BuzzerPadrao padrao) {
   if (padrao == BUZZ_CLIQUE && _tocando) {
-    noTone(PIN_BUZZER);
+    noTone(PINO_BUZZER);
   }
   _padraoAtual = padrao;
   _faseSequencia = 0;
@@ -96,7 +95,7 @@ void Buzzer::atualizar() {
 
   uint8_t totalFases = quantidadeNotas(_padraoAtual) * 2;
   if (_faseSequencia >= totalFases) {
-    noTone(PIN_BUZZER);
+    noTone(PINO_BUZZER);
     _tocando = false;
     _padraoAtual = BUZZ_NENHUM;
     return;
@@ -104,10 +103,10 @@ void Buzzer::atualizar() {
 
   if (_faseSequencia % 2 == 0) {
     uint8_t indiceNota = _faseSequencia / 2;
-    tone(PIN_BUZZER, frequenciaHz(indiceNota, _padraoAtual));
+    tone(PINO_BUZZER, frequenciaHz(indiceNota, _padraoAtual));
     _proximaAcaoMs = agora + duracaoMs(indiceNota, _padraoAtual);
   } else {
-    noTone(PIN_BUZZER);
+    noTone(PINO_BUZZER);
     _proximaAcaoMs = agora + 40;  // pausa entre notas
   }
   _faseSequencia++;

@@ -2,7 +2,7 @@
  * Teste LCD 20x4 I2C — Arduino IDE
  *
  * Monitor Serial: 115200 baud — varredura I2C + status (confira o LCD).
- * Biblioteca: ver LCD_USE_NEW_LIQUIDCRYSTAL e LCD_PCF8574_LAYOUT_YWROBOT em config.h
+ * Biblioteca: ver LCD_USA_NEW_LIQUIDCRYSTAL e LCD_LAYOUT_YWROBOT em config.h
  */
 
 #include "../../config.h"
@@ -11,7 +11,7 @@
 LiquidCrystal_I2C lcd(LCD_I2C_CTOR_ARGS);
 
 void setup() {
-  Serial.begin(SERIAL_BAUD);
+  Serial.begin(SERIAL_VELOCIDADE);
   delay(800);
   Serial.println();
   Serial.println("========================================");
@@ -19,10 +19,10 @@ void setup() {
   Serial.println("  Monitor Serial: 115200 baud");
   Serial.println("========================================");
   Serial.printf("[INFO] SDA=GPIO%d SCL=GPIO%d addr config=0x%02X\n",
-                 PIN_I2C_SDA, PIN_I2C_SCL, LCD_I2C_ADDR);
-#if LCD_USE_NEW_LIQUIDCRYSTAL && LCD_PCF8574_LAYOUT_YWROBOT
+                 PINO_I2C_SDA, PINO_I2C_SCL, LCD_ENDERECO_I2C);
+#if LCD_USA_NEW_LIQUIDCRYSTAL && LCD_LAYOUT_YWROBOT
   Serial.println("[INFO] NewLiquidCrystal + layout YWROBOT (modulo comum)");
-#elif LCD_USE_NEW_LIQUIDCRYSTAL
+#elif LCD_USA_NEW_LIQUIDCRYSTAL
   Serial.println("[INFO] NewLiquidCrystal layout padrao (raro)");
 #else
   Serial.println("[INFO] Biblioteca LiquidCrystal I2C (marcoschwartz)");
@@ -33,7 +33,7 @@ void setup() {
   lcdI2cWireBegin();
   lcdI2cScanSerial();
 
-  if (!lcdI2cEnderecoResponde(LCD_I2C_ADDR)) {
+  if (!lcdI2cEnderecoResponde(LCD_ENDERECO_I2C)) {
     Serial.println("[ERRO] Pare aqui: corrija endereco I2C ou fiacao antes do LCD.");
     return;
   }

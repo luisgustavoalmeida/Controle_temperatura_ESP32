@@ -1,5 +1,7 @@
 /**
- * encoder_rotativo.cpp — Quadratura em ISR + clique e duplo clique no botao
+ * encoder_rotativo.cpp — Quadratura em ISR + debounce do botão
+ *
+ * Setpoint em ALVO_TEMP_* (config.h). Clique longo reinicia PID no firmware principal.
  */
 
 #include "encoder_rotativo.h"
@@ -13,8 +15,8 @@ void EncoderRotativo::isrEncoder() {
     return;
   }
 
-  int8_t clk = digitalRead(PIN_ENC_CLK);
-  int8_t dt = digitalRead(PIN_ENC_DT);
+  int8_t clk = digitalRead(PINO_ENCODER_CLK);
+  int8_t dt = digitalRead(PINO_ENCODER_DT);
 
   if (clk != ultimoClk) {
     if (dt != clk) {
@@ -27,16 +29,16 @@ void EncoderRotativo::isrEncoder() {
 }
 
 void EncoderRotativo::iniciar() {
-  pinMode(PIN_ENC_CLK, INPUT_PULLUP);
-  pinMode(PIN_ENC_DT, INPUT_PULLUP);
-  pinMode(PIN_ENC_SW, INPUT_PULLUP);
+  pinMode(PINO_ENCODER_CLK, INPUT_PULLUP);
+  pinMode(PINO_ENCODER_DT, INPUT_PULLUP);
+  pinMode(PINO_ENCODER_BOTAO, INPUT_PULLUP);
 
-  _setpoint = SETPOINT_PADRAO_C;
+  _setpoint = ALVO_TEMP_PADRAO_C;
   _delta = 0;
   _cliquePendente = false;
   _duploCliquePendente = false;
   _cliqueLongoPendente = false;
-  _rotacaoPendente = false;
+  _passosGiroPendentes = 0;
   _aguardandoPossivelDuplo = false;
   _ultimoRotacaoMs = 0;
   _ultimoCliqueMs = 0;
@@ -44,18 +46,19 @@ void EncoderRotativo::iniciar() {
   _botaoEstavaPressionado = false;
   _millisBotaoPressionado = 0;
   _giroComBotaoPressionado = false;
+  _acumuladorDetente = 0;
 
-  ultimoClk = digitalRead(PIN_ENC_CLK);
+  ultimoClk = digitalRead(PINO_ENCODER_CLK);
   instancia = this;
-  attachInterrupt(digitalPinToInterrupt(PIN_ENC_CLK), isrEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PINO_ENCODER_CLK), isrEncoder, CHANGE);
 }
 
 void EncoderRotativo::definirSetpoint(float c) {
-  if (c < SETPOINT_MIN_C) {
-    c = SETPOINT_MIN_C;
+  if (c < ALVO_TEMP_MIN_C) {
+    c = ALVO_TEMP_MIN_C;
   }
-  if (c > SETPOINT_MAX_C) {
-    c = SETPOINT_MAX_C;
+  if (c > ALVO_TEMP_MAX_C) {
+    c = ALVO_TEMP_MAX_C;
   }
   _setpoint = c;
 }
@@ -66,7 +69,7 @@ float EncoderRotativo::setpointC() const {
 
 void EncoderRotativo::atualizar() {
   unsigned long agora = millis();
-  bool botao = (digitalRead(PIN_ENC_SW) == LOW);
+  bool botao = (digitalRead(PINO_ENCODER_BOTAO) == LOW);
 
   if (botao && !_botaoEstavaPressionado) {
     _millisBotaoPressionado = agora;
@@ -106,10 +109,6 @@ void EncoderRotativo::atualizar() {
     _aguardandoPossivelDuplo = false;
   }
 
-  if (agora - _ultimoRotacaoMs < 5) {
-    return;
-  }
-
   noInterrupts();
   int d = _delta;
   _delta = 0;
@@ -118,23 +117,49 @@ void EncoderRotativo::atualizar() {
   if (d == 0) {
     return;
   }
-  _ultimoRotacaoMs = agora;
+
+  _acumuladorDetente += d;
+  int passos = 0;
+  while (_acumuladorDetente >= ENCODER_CONTAGENS_POR_DETENTE) {
+    passos++;
+    _acumuladorDetente -= ENCODER_CONTAGENS_POR_DETENTE;
+  }
+  while (_acumuladorDetente <= -ENCODER_CONTAGENS_POR_DETENTE) {
+    passos--;
+    _acumuladorDetente += ENCODER_CONTAGENS_POR_DETENTE;
+  }
+  if (passos == 0) {
+    return;
+  }
 
   if (botao) {
     _giroComBotaoPressionado = true;
     _aguardandoPossivelDuplo = false;
   }
 
-  float passo = botao ? SETPOINT_PASSO_FINO_C : SETPOINT_PASSO_C;
-  definirSetpoint(_setpoint + (float)d * passo);
-  _rotacaoPendente = true;
+  float passo = botao ? ALVO_TEMP_PASSO_FINO_C : ALVO_TEMP_PASSO_C;
+  int passosAplicados = 0;
+  int dir = (passos > 0) ? 1 : -1;
+  int quantidade = (passos > 0) ? passos : -passos;
+  for (int i = 0; i < quantidade; i++) {
+    float antes = _setpoint;
+    definirSetpoint(_setpoint + (float)dir * passo);
+    if (fabsf(_setpoint - antes) < 0.0001f) {
+      break;
+    }
+    passosAplicados++;
+  }
+  if (passosAplicados == 0) {
+    return;
+  }
+  _passosGiroPendentes += passosAplicados;
 }
 
 bool EncoderRotativo::consumirEventoRotacao() {
-  if (!_rotacaoPendente) {
+  if (_passosGiroPendentes <= 0) {
     return false;
   }
-  _rotacaoPendente = false;
+  _passosGiroPendentes--;
   return true;
 }
 

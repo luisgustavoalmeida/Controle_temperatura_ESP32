@@ -13,16 +13,12 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-#ifndef DS18_RESOLUCAO_BITS
-#define DS18_RESOLUCAO_BITS 12
-#endif
-
-static OneWire barramentoOneWire(PIN_DS18B20);
+static OneWire barramentoOneWire(PINO_SENSOR_TEMP);
 static DallasTemperature sensores(&barramentoOneWire);
 
 void SensorDS18B20::iniciar() {
   sensores.begin();
-  sensores.setResolution(DS18_RESOLUCAO_BITS);
+  sensores.setResolution(SENSOR_RESOLUCAO_BITS);
 
   // Essencial: requestTemperatures() retorna imediatamente
   sensores.setWaitForConversion(false);
@@ -31,7 +27,7 @@ void SensorDS18B20::iniciar() {
   sensores.setCheckForConversion(true);
   _checarConversaoNoBarramento = true;
 
-  _resolucaoBits = DS18_RESOLUCAO_BITS;
+  _resolucaoBits = SENSOR_RESOLUCAO_BITS;
   _tempoMinimoConversaoMs = sensores.millisToWaitForConversion(_resolucaoBits);
 
   _ok = (sensores.getDeviceCount() > 0);

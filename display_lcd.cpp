@@ -1,5 +1,8 @@
 /**
- * display_lcd.cpp — Layout do LCD com mensagens de operacao
+ * display_lcd.cpp — Renderização do LCD com cache (evita flicker)
+ *
+ * Só redesenha linhas quando setpoint, PV, OUT ou estado mudam.
+ * Animação "PID." na linha 4 usa LCD_ANIM_PID_MS (config.h).
  */
 
 #include "display_lcd.h"
@@ -14,7 +17,7 @@ void DisplayLCD::escreverLinha(uint8_t linha, const char* texto) {
   lcd.setCursor(0, linha);
   lcd.print(texto);
   int len = strlen(texto);
-  for (int i = len; i < LCD_COLS; i++) {
+  for (int i = len; i < LCD_COLUNAS; i++) {
     lcd.print(' ');
   }
 }
@@ -22,18 +25,20 @@ void DisplayLCD::escreverLinha(uint8_t linha, const char* texto) {
 void DisplayLCD::invalidarCache() {
   _ultimoSetpoint = -999.0f;
   _ultimoAtual = -999.0f;
-  _ultimaSaida = -1.0f;
+  _ultimaPotCmd = -1.0f;
+  _ultimoPassoPotA = 0xFF;
+  _ultimoPassoPotB = 0xFF;
   _ultimoEstado = ESTADO_INICIALIZANDO;
   _ultimaMsgTransicao = MSG_NENHUMA;
   _ultimoFrameAnimPid = 255;
   _ultimoSetpointPendente = false;
 }
 
-void DisplayLCD::montarLinhaBuscandoTemp(char* buffer, size_t tam, int percentual,
+void DisplayLCD::montarLinhaBuscandoTemp(char* buffer, size_t tam, float percentual,
                                          uint8_t frameAnim) {
   static const char* sufixos[] = {"", ".", "..", "..."};
   frameAnim %= 4;
-  snprintf(buffer, tam, "Pot:%3d%% | PID%s", percentual, sufixos[frameAnim]);
+  snprintf(buffer, tam, "Pot:%5.1f%% | PID%s", percentual, sufixos[frameAnim]);
 }
 
 bool DisplayLCD::iniciar() {
@@ -55,10 +60,10 @@ void DisplayLCD::splashInicializacao() {
   escreverLinha(3, "I2C 0x27 OK");
 }
 
-void DisplayLCD::atualizar(float setpointC, float atualC, float saidaPid,
-                           EstadoSistema estado, bool metaAtingida,
-                           bool controleAtivo, MensagemTransicao msgTransicao,
-                           bool setpointPendenteNaMalha) {
+void DisplayLCD::atualizar(float setpointC, float atualC, float potenciaCmd01,
+                           uint8_t passoPotA, uint8_t passoPotB, EstadoSistema estado,
+                           bool metaAtingida, bool controleAtivo,
+                           MensagemTransicao msgTransicao, bool setpointPendenteNaMalha) {
   if (!_ok) {
     return;
   }
@@ -68,13 +73,14 @@ void DisplayLCD::atualizar(float setpointC, float atualC, float saidaPid,
       (msgTransicao == MSG_NENHUMA);
   uint8_t frameAnimPid =
       buscandoTemperatura
-          ? (uint8_t)((millis() / DISPLAY_ANIM_PID_MS) % 4)
+          ? (uint8_t)((millis() / LCD_ANIM_PID_MS) % 4)
           : 0;
 
   bool precisaAtualizar =
-      (fabsf(setpointC - _ultimoSetpoint) > 0.01f) ||
+      (fabsf(setpointC - _ultimoSetpoint) > 0.001f) ||
       (fabsf(atualC - _ultimoAtual) > 0.01f) ||
-      (fabsf(saidaPid - _ultimaSaida) > 0.01f) ||
+      (fabsf(potenciaCmd01 - _ultimaPotCmd) > 0.001f) ||
+      (passoPotA != _ultimoPassoPotA) || (passoPotB != _ultimoPassoPotB) ||
       (estado != _ultimoEstado) || (metaAtingida != _ultimaMeta) ||
       (controleAtivo != _ultimoControleAtivo) ||
       (msgTransicao != _ultimaMsgTransicao) ||
@@ -87,7 +93,9 @@ void DisplayLCD::atualizar(float setpointC, float atualC, float saidaPid,
 
   _ultimoSetpoint = setpointC;
   _ultimoAtual = atualC;
-  _ultimaSaida = saidaPid;
+  _ultimaPotCmd = potenciaCmd01;
+  _ultimoPassoPotA = passoPotA;
+  _ultimoPassoPotB = passoPotB;
   _ultimoEstado = estado;
   _ultimaMeta = metaAtingida;
   _ultimoControleAtivo = controleAtivo;
@@ -125,9 +133,13 @@ void DisplayLCD::atualizar(float setpointC, float atualC, float saidaPid,
     escreverLinha(2, buffer);
   }
 
-  int percentual = (int)(saidaPid * 100.0f + 0.5f);
-  if (percentual < 0) percentual = 0;
-  if (percentual > 100) percentual = 100;
+  float pctCmd = potenciaCmd01 * 100.0f;
+  if (pctCmd < 0.0f) {
+    pctCmd = 0.0f;
+  }
+  if (pctCmd > 100.0f) {
+    pctCmd = 100.0f;
+  }
 
   if (estado == ESTADO_SENSOR_ERRO) {
     escreverLinha(3, "Pot: MIN | FALHA SENS");
@@ -138,10 +150,10 @@ void DisplayLCD::atualizar(float setpointC, float atualC, float saidaPid,
   } else if (msgTransicao == MSG_DESATIVANDO_MALHA) {
     escreverLinha(3, "PID: encerrando...");
   } else if (metaAtingida) {
-    snprintf(buffer, sizeof(buffer), "Pot:%3d%% | Temp OK", percentual);
+    snprintf(buffer, sizeof(buffer), "Pot:%5.1f%% | Temp OK", pctCmd);
     escreverLinha(3, buffer);
   } else {
-    montarLinhaBuscandoTemp(buffer, sizeof(buffer), percentual, frameAnimPid);
+    montarLinhaBuscandoTemp(buffer, sizeof(buffer), pctCmd, frameAnimPid);
     escreverLinha(3, buffer);
   }
 }

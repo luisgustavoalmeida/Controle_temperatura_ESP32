@@ -1,5 +1,11 @@
 /**
- * display_lcd.h — LCD 20x4 (status da malha, temperaturas e mensagens)
+ * display_lcd.h — LCD 20×4 I2C (PCF8574)
+ *
+ * Layout típico:
+ *   Linha 0 — alvo °C
+ *   Linha 1 — temperatura medida
+ *   Linha 2 — potência % (comando PID)
+ *   Linha 3 — estado / animação PID
  */
 
 #ifndef DISPLAY_LCD_H
@@ -26,7 +32,9 @@ public:
   bool iniciar();
   void splashInicializacao();
 
-  void atualizar(float setpointC, float atualC, float saidaPid, EstadoSistema estado,
+  /** potenciaCmd01 = OUT do PID 0..1 (exibido como % na linha 3) */
+  void atualizar(float setpointC, float atualC, float potenciaCmd01,
+                 uint8_t passoPotA, uint8_t passoPotB, EstadoSistema estado,
                  bool metaAtingida, bool controleAtivo, MensagemTransicao msgTransicao,
                  bool setpointPendenteNaMalha);
 
@@ -36,7 +44,9 @@ private:
   bool _ok;
   float _ultimoSetpoint;
   float _ultimoAtual;
-  float _ultimaSaida;
+  float _ultimaPotCmd;
+  uint8_t _ultimoPassoPotA;
+  uint8_t _ultimoPassoPotB;
   EstadoSistema _ultimoEstado;
   bool _ultimaMeta;
   bool _ultimoControleAtivo;
@@ -45,7 +55,7 @@ private:
   bool _ultimoSetpointPendente;
 
   void escreverLinha(uint8_t linha, const char* texto);
-  static void montarLinhaBuscandoTemp(char* buffer, size_t tam, int percentual,
+  static void montarLinhaBuscandoTemp(char* buffer, size_t tam, float percentual,
                                       uint8_t frameAnim);
 };
 

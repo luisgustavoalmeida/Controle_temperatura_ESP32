@@ -1,7 +1,8 @@
 /**
- * buzzer.h — Buzzer ativo no GPIO 32 (função tone() do Arduino)
+ * buzzer.h — Buzzer ativo (PINO_BUZZER)
  *
- * Todas as sequências são não bloqueantes: chame atualizar() no loop rápido.
+ * Padrões: clique encoder, confirmação, meta atingida, fora da meta.
+ * Não bloqueia o loop — use atualizar() periodicamente.
  */
 
 #ifndef BUZZER_H

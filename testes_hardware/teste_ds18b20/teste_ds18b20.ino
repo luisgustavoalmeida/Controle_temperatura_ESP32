@@ -14,18 +14,18 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-OneWire oneWire(PIN_DS18B20);
+OneWire oneWire(PINO_SENSOR_TEMP);
 DallasTemperature sensores(&oneWire);
 
 void setup() {
-  Serial.begin(SERIAL_BAUD);
+  Serial.begin(SERIAL_VELOCIDADE);
   delay(800);
   Serial.println();
   Serial.println("========================================");
   Serial.println("  TESTE DS18B20");
   Serial.println("  Monitor Serial: 115200 baud");
   Serial.println("========================================");
-  Serial.printf("[INFO] Pino DQ: GPIO %d\n", PIN_DS18B20);
+  Serial.printf("[INFO] Pino DQ: GPIO %d\n", PINO_SENSOR_TEMP);
   Serial.println("[INFO] Ligacao: VDD->3,3V GND->GND DQ->GPIO4 + 4,7k para 3,3V");
 
   sensores.begin();

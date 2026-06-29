@@ -19,8 +19,8 @@ static unsigned long swPressionadoMs = 0;
 static bool rotouComSwPressionado = false;
 
 void IRAM_ATTR isrEncoder() {
-  int clk = digitalRead(PIN_ENC_CLK);
-  int dt = digitalRead(PIN_ENC_DT);
+  int clk = digitalRead(PINO_ENCODER_CLK);
+  int dt = digitalRead(PINO_ENCODER_DT);
   if (clk != ultimoClk) {
     if (dt != clk) {
       delta++;
@@ -32,11 +32,11 @@ void IRAM_ATTR isrEncoder() {
 }
 
 bool botaoPressionado() {
-  return digitalRead(PIN_ENC_SW) == LOW;
+  return digitalRead(PINO_ENCODER_BOTAO) == LOW;
 }
 
 void setup() {
-  Serial.begin(SERIAL_BAUD);
+  Serial.begin(SERIAL_VELOCIDADE);
   delay(800);
   Serial.println();
   Serial.println("========================================");
@@ -44,15 +44,15 @@ void setup() {
   Serial.println("  Monitor Serial: 115200 baud");
   Serial.println("========================================");
   Serial.printf("[INFO] CLK=GPIO%d DT=GPIO%d SW=GPIO%d\n",
-                 PIN_ENC_CLK, PIN_ENC_DT, PIN_ENC_SW);
+                 PINO_ENCODER_CLK, PINO_ENCODER_DT, PINO_ENCODER_BOTAO);
 
-  pinMode(PIN_ENC_CLK, INPUT_PULLUP);
-  pinMode(PIN_ENC_DT, INPUT_PULLUP);
-  pinMode(PIN_ENC_SW, INPUT_PULLUP);
+  pinMode(PINO_ENCODER_CLK, INPUT_PULLUP);
+  pinMode(PINO_ENCODER_DT, INPUT_PULLUP);
+  pinMode(PINO_ENCODER_BOTAO, INPUT_PULLUP);
 
-  ultimoClk = digitalRead(PIN_ENC_CLK);
-  swAnterior = digitalRead(PIN_ENC_SW);
-  attachInterrupt(digitalPinToInterrupt(PIN_ENC_CLK), isrEncoder, CHANGE);
+  ultimoClk = digitalRead(PINO_ENCODER_CLK);
+  swAnterior = digitalRead(PINO_ENCODER_BOTAO);
+  attachInterrupt(digitalPinToInterrupt(PINO_ENCODER_CLK), isrEncoder, CHANGE);
 
   Serial.println("[OK] Encoder pronto.");
   Serial.println("----------------------------------------");
@@ -60,7 +60,7 @@ void setup() {
 
 void loop() {
   int d;
-  bool swAgora = digitalRead(PIN_ENC_SW);
+  bool swAgora = digitalRead(PINO_ENCODER_BOTAO);
 
   noInterrupts();
   d = delta;

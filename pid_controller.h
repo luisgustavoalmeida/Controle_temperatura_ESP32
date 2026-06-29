@@ -2,7 +2,7 @@
  * pid_controller.h — Controlador PID para temperatura
  *
  * Entrada: setpoint e temperatura medida [°C]
- * Saída: potência normalizada entre PID_SAIDA_MIN e PID_SAIDA_MAX (0..1)
+ * Saída: 0..1 → Req equivalente linear (potenciometro_map, ver config.h)
  *
  * Portado de: Malha_PID_temperatura/src/pid_controller.py
  * Inclui limite na integral e anti-windup por back-calculation.
