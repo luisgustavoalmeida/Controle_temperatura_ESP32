@@ -27,9 +27,9 @@
 /** Chip select do TPL0501 A (ativo em LOW). */
 #define PINO_POT_CS_A          5
 /** Chip select do TPL0501 B — só usado quando POT_USA_DOIS_CHIPS = 1. */
-#define PINO_POT_CS_B          16
+#define PINO_POT_CS_B          18
 /** Clock SPI compartilhado entre os dois TPL0501. */
-#define PINO_POT_SCLK          18
+#define PINO_POT_SCLK          16
 /** Dados SPI (MOSI) compartilhados entre os dois TPL0501. */
 #define PINO_POT_MOSI          23
 
@@ -79,11 +79,11 @@
 // ===========================================================================
 
 /** Ganho proporcional — reação à diferença SP − PV (°C). */
-#define PID_GANHO_KP           0.025f
+#define PID_GANHO_KP           0.05f
 /** Ganho integral — corrige erro persistente (cuidado com overshoot). */
-#define PID_GANHO_KI           0.0013f
+#define PID_GANHO_KI           0.002f
 /** Ganho derivativo — amortecimento ante mudanças rápidas de PV. */
-#define PID_GANHO_KD           0.01f
+#define PID_GANHO_KD           0.27f
 
 /** Limites da saída do PID: 0 = potência mínima, 1 = potência máxima. */
 #define PID_SAIDA_MIN          0.0f
@@ -118,8 +118,10 @@
 #define ENCODER_CLIQUE_MIN_MS          50
 /** Duração máxima de um clique curto (acima disso = longo) [ms]. */
 #define ENCODER_CLIQUE_MAX_MS          450
-/** Segurar o botão sem girar dispara reinício do PID [ms]. */
+/** Segurar e soltar (sem girar) reinicia o PID no modo temperatura [ms]. */
 #define ENCODER_CLIQUE_LONGO_MS        800
+/** Segurar o botão sem girar por este tempo troca PID ↔ potência [ms]. */
+#define ENCODER_TROCA_MODO_MS          3000
 
 /**
  * Ao religar da standby com clique: reinicia o PID se
@@ -128,7 +130,7 @@
 #define STANDBY_RELIGA_REINICIA_DELTA_C  3.0f
 
 /**
- * Faixa em torno do alvo para aviso sonoro e texto “Temp OK” no LCD [°C].
+ * Faixa em torno do alvo para aviso sonoro, piscar do backlight e texto “Temp OK” [°C].
  * NÃO pausa o PID nem o potenciômetro — só buzzer e display.
  */
 #define BUZZER_HISTERESE_C     0.2f
@@ -138,6 +140,22 @@
  * false = inicia em standby; clique no encoder para ligar (padrão seguro).
  */
 #define MALHA_INICIA_ATIVA     false
+
+// ===========================================================================
+// 3b. Modo potência manual (encoder ajusta saída direta, sem PID)
+//     100 % = Req mínima (~0 Ω) | 0 % = REQ_IDEAL_POTENCIA_MIN_KOHM (150 kΩ)
+// ===========================================================================
+
+/** Faixa do alvo de potência no encoder [%]. */
+#define ALVO_POT_MIN_PCT        0.0f
+#define ALVO_POT_MAX_PCT        100.0f
+/** Alvo exibido ao entrar no modo potência [%]. */
+#define ALVO_POT_PADRAO_PCT     0.0f
+
+/** Incremento por detente — giro normal: ±1 na parte inteira, mantém décimos [%]. */
+#define ALVO_POT_PASSO_PCT      1.0f
+/** Incremento com botão + giro: décimos (75,1 → 75,2 → 75,3) [%]. */
+#define ALVO_POT_PASSO_FINO_PCT 0.1f
 
 // ===========================================================================
 // 4. TPL0501 — potenciômetro digital e rede do chuveiro
@@ -290,8 +308,32 @@
 /** Atualização do LCD (temperatura, % potência, estados) [ms]. */
 #define PERIODO_LCD_MS             100
 
+/**
+ * Com controle desligado: apaga backlight após este tempo sem interação no encoder [ms].
+ */
+#define LCD_BACKLIGHT_INATIVIDADE_MS  30000
+
+/**
+ * Com controle ligado: desliga automaticamente (standby, pot. 0 %) após este tempo
+ * sem qualquer interação no encoder (giro, clique ou botão pressionado) [ms].
+ * 40 min = 40 × 60 × 1000.
+ */
+#define AUTO_DESLIGA_INATIVIDADE_MS   (40UL * 60UL * 1000UL)
+
+/** Potência elétrica equivalente a 100 % de saída do chuveiro [W]. */
+#define POTENCIA_MAX_WATTS            6000.0f
+
+/** Piscar backlight ao entrar/sair da meta (espelha duração do buzzer) [ms]. */
+#define LCD_PISCAR_META_LIGADO_MS     120
+#define LCD_PISCAR_FORA_META_LIGADO_MS 140
+#define LCD_PISCAR_META_PAUSA_MS      40
+
 /** Encoder e buzzer — polling rápido sem bloquear o loop [ms]. */
-#define PERIODO_LOOP_MS            10
+#define PERIODO_LOOP_MS            5
+
+/** Clique do encoder — pulso curto em micros (mais seco que millis). */
+#define BUZZ_CLIQUE_HZ               3000
+#define BUZZ_CLIQUE_US               2000UL
 
 /** Velocidade do Monitor Serial [baud]. */
 #define SERIAL_VELOCIDADE          115200

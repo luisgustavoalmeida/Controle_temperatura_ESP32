@@ -7,8 +7,9 @@
  *   1. Lê a temperatura da água (sensor DS18B20).
  *   2. O usuário escolhe a temperatura desejada no encoder rotativo.
  *   3. PID OUT 0..1 → passos TPL0501 via SPI; atuador a cada ciclo PID.
- *   4. A malha nao pausa na meta: regulacao continua (histerese so no buzzer).
- *   5. Duplo clique = standby (pot. 0, malha preservada); clique = religar; longo = reiniciar PID.
+ *   4. A malha nao pausa na meta: regulacao continua (histerese so no buzzer/backlight).
+ *   5. Duplo clique = standby (pot. 0); clique = religar; longo = reiniciar PID (modo temp).
+ *   6. Segurar encoder 3 s sem girar = alternar PID ↔ potência manual.
  *
  * Ganhos PID: ver PID_GANHO_* em config.h
  *
@@ -27,6 +28,7 @@
 #include "display_lcd.h"
 #include "encoder_rotativo.h"
 #include "buzzer.h"
+#include "medidor_uso.h"
 
 // =============================================================================
 // Módulos de hardware (um objeto por periférico)
@@ -37,6 +39,7 @@ SensorDS18B20 sensorTemp;     // Entrada (temperatura)
 DisplayLCD display;           // Saída visual
 EncoderRotativo encoder;      // Entrada do usuário (setpoint)
 Buzzer buzzer;                // Saída sonora
+MedidorUso medidorUso;        // Cronômetro + energia ∫P dt
 
 // =============================================================================
 // Variáveis da malha de controle
@@ -46,8 +49,13 @@ float temperaturaFiltrada = NAN;   // Média móvel (menos ruído) [°C]
 float saidaPid = 0.0f;             // PID OUT 0..1 → potência (1=máx); passo via escala ideal 150 kΩ
 float setpointEncoder = ALVO_TEMP_PADRAO_C;
 float setpointMalha = ALVO_TEMP_PADRAO_C;
+float alvoPotenciaEncoder = ALVO_POT_PADRAO_PCT;
+float saidaPotenciaManual = 0.0f;
 bool setpointPendenteNaMalha = false;
 unsigned long momentoUltimoGiroEncoder = 0;
+unsigned long momentoUltimaInteracaoEncoder = 0;
+
+ModoControle modoControle = MODO_CONTROLE_PID;
 
 bool metaAtingida = false;
 bool estavaNaMeta = false;
@@ -130,9 +138,11 @@ bool temperaturaAtingiuMeta() {
 void avisarMudancaDeMeta(bool naMetaAgora) {
   if (naMetaAgora && !estavaNaMeta) {
     buzzer.tocarMetaAtingida();
+    display.piscarMetaAtingida();
     Serial.println(F("[BUZZER] Entrou na meta"));
   } else if (!naMetaAgora && estavaNaMeta) {
     buzzer.tocarForaDaMeta();
+    display.piscarForaDaMeta();
     Serial.println(F("[BUZZER] Saiu da meta"));
   }
   estavaNaMeta = naMetaAgora;
@@ -148,10 +158,15 @@ void registrarAplicacaoPot(float outAplicado) {
   momentoUltimoAjustePot = millis();
 }
 
-/** OUT (0..1) → TPL0501: salto SPI direto a cada atualização do PID. */
+/** OUT (0..1) → TPL0501: salto SPI direto. */
 void aplicarSaidaPidNoPotenciometro() {
   potenciometro.definirSaidaNormalizadaRapida(saidaPid);
   registrarAplicacaoPot(saidaPid);
+}
+
+void aplicarSaidaPotenciaManualNoPotenciometro() {
+  potenciometro.definirSaidaNormalizadaRapida(saidaPotenciaManual);
+  registrarAplicacaoPot(saidaPotenciaManual);
 }
 
 /** Standby: potencia 0 % sem alterar saidaPid (memoria da malha). */
@@ -186,43 +201,98 @@ bool temperaturaMuitoAbaixoDoAlvo() {
 
 void entrarModoSeguroPorFalhaSensor() {
   saidaPid = PID_SAIDA_MIN;
+  saidaPotenciaManual = PID_SAIDA_MIN;
+  alvoPotenciaEncoder = ALVO_POT_MIN_PCT;
+  encoder.definirAlvoPotenciaPercent(alvoPotenciaEncoder);
   aplicarSaidaPidNoPotenciometro();
   pid.reiniciar();
 }
 
+/** Potência normalizada 0..1 em uso (PID ou manual). */
+float potenciaComandoAtual() {
+  if (!controleMalhaAtivo) {
+    return 0.0f;
+  }
+  return (modoControle == MODO_CONTROLE_POTENCIA) ? saidaPotenciaManual : saidaPid;
+}
+
+void desligarMalhaControle(bool porInatividade = false);
+
+void registrarInteracaoEncoder(bool atualizarBacklight = true) {
+  momentoUltimaInteracaoEncoder = millis();
+  if (atualizarBacklight) {
+    display.notificarAtividadeEncoder();
+  }
+}
+
+void verificarDesligamentoAutomatico() {
+  if (!controleMalhaAtivo) {
+    return;
+  }
+  if ((millis() - momentoUltimaInteracaoEncoder) < AUTO_DESLIGA_INATIVIDADE_MS) {
+    return;
+  }
+  buzzer.tocarConfirmacao();
+  desligarMalhaControle(true);
+}
+
 /** Standby: pot. 0 %; preserva saidaPid e estado do PID. */
-void desligarMalhaControle() {
+void desligarMalhaControle(bool porInatividade) {
+  unsigned long agora = millis();
+  medidorUso.atualizar(potenciaComandoAtual(), true, agora);
+  medidorUso.atualizar(0.0f, false, agora);
+
   controleMalhaAtivo = false;
   aplicarPotenciometroStandby();
   estavaNaMeta = false;
   metaAtingida = false;
-  msgTransicao = MSG_DESATIVANDO_MALHA;
+  if (porInatividade) {
+    msgTransicao = MSG_DESLIGA_INATIVIDADE;
+    Serial.println(F("[CTRL] Desligamento automatico — 40 min sem interacao"));
+  } else {
+    msgTransicao = MSG_DESATIVANDO_MALHA;
+    Serial.print(F("[CTRL] Standby — pot. 0 | OUT mem="));
+    Serial.println(saidaPid, 3);
+  }
   msgTransicaoAteMs = millis() + LCD_MSG_TRANSICAO_MS;
   display.invalidarCache();
-  Serial.print(F("[CTRL] Standby — pot. 0 | OUT mem="));
-  Serial.println(saidaPid, 3);
+  registrarInteracaoEncoder(false);
 }
 
-/** Reativa malha; opcionalmente reinicia PID (integral zerada). */
+/** Reativa controle; no modo PID pode reiniciar integral. */
 void ligarMalhaControle(bool reiniciarPid) {
+  medidorUso.reiniciar(millis());
   controleMalhaAtivo = true;
-  if (reiniciarPid) {
+  if (modoControle == MODO_CONTROLE_PID && reiniciarPid) {
     pid.reiniciar();
     saidaPid = PID_SAIDA_MIN;
+    aplicarSaidaPidNoPotenciometro();
+  } else if (modoControle == MODO_CONTROLE_POTENCIA) {
+    saidaPotenciaManual = alvoPotenciaEncoder / 100.0f;
+    aplicarSaidaPotenciaManualNoPotenciometro();
+  } else {
+    aplicarSaidaPidNoPotenciometro();
   }
-  aplicarSaidaPidNoPotenciometro();
   estavaNaMeta = false;
   metaAtingida = false;
   msgTransicao = MSG_ATIVANDO_MALHA;
   msgTransicaoAteMs = millis() + LCD_MSG_TRANSICAO_MS;
   display.invalidarCache();
-  Serial.print(F("[CTRL] Malha ON | reinicia="));
+  registrarInteracaoEncoder(false);
+  Serial.print(F("[CTRL] Malha ON | modo="));
+  Serial.print(nomeModoControle());
+  Serial.print(F(" reinicia="));
   Serial.print(reiniciarPid ? '1' : '0');
   Serial.print(F(" OUT="));
-  Serial.println(saidaPid, 3);
+  Serial.println((modoControle == MODO_CONTROLE_POTENCIA) ? saidaPotenciaManual
+                                                          : saidaPid,
+                 3);
 }
 
 void reiniciarMalhaPid() {
+  if (modoControle != MODO_CONTROLE_PID) {
+    return;
+  }
   pid.reiniciar();
   estavaNaMeta = false;
   metaAtingida = false;
@@ -233,6 +303,54 @@ void reiniciarMalhaPid() {
   Serial.println(F("[CTRL] PID reiniciado (clique longo)"));
 }
 
+const char* nomeModoControle() {
+  return (modoControle == MODO_CONTROLE_POTENCIA) ? "POT" : "PID";
+}
+
+void alternarModoControle() {
+  ModoControle novoModo = (modoControle == MODO_CONTROLE_PID)
+                              ? MODO_CONTROLE_POTENCIA
+                              : MODO_CONTROLE_PID;
+
+  if (controleMalhaAtivo) {
+    if (novoModo == MODO_CONTROLE_POTENCIA) {
+      alvoPotenciaEncoder = saidaPid * 100.0f;
+      encoder.definirAlvoPotenciaPercent(alvoPotenciaEncoder);
+      saidaPotenciaManual = saidaPid;
+    } else {
+      setpointEncoder = setpointMalha;
+      encoder.definirSetpoint(setpointEncoder);
+      setpointPendenteNaMalha = false;
+      if (controleMalhaAtivo) {
+        pid.reiniciar();
+        saidaPid = PID_SAIDA_MIN;
+      }
+    }
+  }
+
+  modoControle = novoModo;
+  encoder.definirModoAjuste(
+      (modoControle == MODO_CONTROLE_POTENCIA) ? ENCODER_AJUSTE_POTENCIA
+                                               : ENCODER_AJUSTE_TEMPERATURA);
+
+  estavaNaMeta = false;
+  metaAtingida = false;
+  msgTransicao = MSG_TROCANDO_MODO;
+  msgTransicaoAteMs = millis() + LCD_MSG_TRANSICAO_MS;
+  display.invalidarCache();
+
+  Serial.print(F("[CTRL] Modo "));
+  Serial.println(nomeModoControle());
+
+  if (controleMalhaAtivo) {
+    if (modoControle == MODO_CONTROLE_POTENCIA) {
+      aplicarSaidaPotenciaManualNoPotenciometro();
+    } else {
+      aplicarSaidaPidNoPotenciometro();
+    }
+  }
+}
+
 void atualizarMensagemTransicao() {
   if (msgTransicao != MSG_NENHUMA && millis() >= msgTransicaoAteMs) {
     msgTransicao = MSG_NENHUMA;
@@ -241,50 +359,54 @@ void atualizarMensagemTransicao() {
 }
 
 #if SERIAL_DEPURAR_MALHA
-/** Uma linha por passo do PID (~PERIODO_PID_MS) — somente malha de controle. */
+/** Uma linha por passo do controle (~PERIODO_PID_MS). */
 void imprimirSerialMalha() {
   Serial.print(F("[MALHA]"));
+  Serial.print(F(" MOD="));
+  Serial.print(nomeModoControle());
   Serial.print(F(" ACT="));
   Serial.print(controleMalhaAtivo ? 1 : 0);
-  Serial.print(F(" SP="));
-  Serial.print(setpointMalha, 2);
+  if (modoControle == MODO_CONTROLE_POTENCIA) {
+    Serial.print(F(" ALVO_POT="));
+    Serial.print(alvoPotenciaEncoder, 1);
+    Serial.print(F(" OUT="));
+    Serial.print(saidaPotenciaManual, 4);
+  } else {
+    Serial.print(F(" SP="));
+    Serial.print(setpointMalha, 2);
+    Serial.print(F(" ERR="));
+    Serial.print(pid.ultimoErro(), 3);
+    Serial.print(F(" P="));
+    Serial.print(pid.ultimoTermoP(), 4);
+    Serial.print(F(" I="));
+    Serial.print(pid.ultimoTermoI(), 4);
+    Serial.print(F(" D="));
+    Serial.print(pid.ultimoTermoD(), 4);
+    Serial.print(F(" OUT="));
+    Serial.print(saidaPid, 4);
+  }
   Serial.print(F(" PV="));
   if (isnan(temperaturaFiltrada)) {
     Serial.print(F("---"));
   } else {
     Serial.print(temperaturaFiltrada, 2);
   }
-  Serial.print(F(" ERR="));
-  Serial.print(pid.ultimoErro(), 3);
-  Serial.print(F(" P="));
-  Serial.print(pid.ultimoTermoP(), 4);
-  Serial.print(F(" I="));
-  Serial.print(pid.ultimoTermoI(), 4);
-  Serial.print(F(" D="));
-  Serial.print(pid.ultimoTermoD(), 4);
-  Serial.print(F(" OUT="));
-  Serial.print(saidaPid, 4);
   Serial.print(F(" PCT_CMD="));
   Serial.print(potenciometro.potenciaAlvoPercentual(), 3);
   Serial.print(F(" PCT="));
   Serial.print(potenciometro.potenciaAtualPercentual(), 3);
-  if (fabsf(potenciometro.potenciaAtualPercentual() / 100.0f - saidaPid)
+  float outRef = (modoControle == MODO_CONTROLE_POTENCIA) ? saidaPotenciaManual
+                                                          : saidaPid;
+  if (fabsf(potenciometro.potenciaAtualPercentual() / 100.0f - outRef)
       > SERIAL_TOLERANCIA_ERRO_POT) {
     Serial.print(F(" dPOT="));
-    Serial.print(potenciometro.potenciaAtualPercentual() - saidaPid * 100.0f, 2);
+    Serial.print(potenciometro.potenciaAtualPercentual() - outRef * 100.0f, 2);
   }
   Serial.print(F(" POT="));
   Serial.print(potenciometro.passoAtualA());
 #if POT_USA_DOIS_CHIPS
   Serial.print(F("/"));
   Serial.print(potenciometro.passoAtualB());
-  if (potenciometro.passoAtualA() != potenciometro.passoAlvoA()
-      || potenciometro.passoAtualB() != potenciometro.passoAlvoB()) {
-    Serial.print(F(" ALVO="));
-    Serial.print(potenciometro.passoAlvoA());
-    Serial.print(F("/"));
-    Serial.print(potenciometro.passoAlvoB());
-  }
 #endif
   Serial.print(F(" META="));
   Serial.println(metaAtingida ? 1 : 0);
@@ -321,6 +443,9 @@ EstadoSistema obterEstadoParaDisplay() {
   if (!controleMalhaAtivo) {
     return ESTADO_CONTROLE_DESLIGADO;
   }
+  if (modoControle == MODO_CONTROLE_POTENCIA) {
+    return ESTADO_POTENCIA_ATIVO;
+  }
   return ESTADO_PID_ATIVO;
 }
 
@@ -329,29 +454,61 @@ EstadoSistema obterEstadoParaDisplay() {
 // -----------------------------------------------------------------------------
 
 /**
- * Tarefa rápida (~10 ms): encoder + buzzer.
+ * Tarefa rápida (~5 ms): encoder + buzzer.
  * O usuário sente resposta imediata ao girar ou pressionar o botão.
  */
 void tarefaInterfaceUsuario() {
+  buzzer.atualizar();
   encoder.atualizar();
+
+  if (controleMalhaAtivo && digitalRead(PINO_ENCODER_BOTAO) == LOW) {
+    registrarInteracaoEncoder();
+  }
+
+  if (encoder.consumirEventoTrocaModo()) {
+    buzzer.tocarConfirmacao();
+    registrarInteracaoEncoder();
+    alternarModoControle();
+  }
+
   float spEncoder = encoder.setpointC();
+  float potEncoder = encoder.alvoPotenciaPercent();
   bool girou = false;
   while (encoder.consumirEventoRotacao()) {
     buzzer.tocarClique();
     girou = true;
   }
 
-  if (girou || fabsf(spEncoder - setpointEncoder) > 0.001f) {
+  if (modoControle == MODO_CONTROLE_POTENCIA) {
+    if (girou || fabsf(potEncoder - alvoPotenciaEncoder) > 0.001f) {
+      alvoPotenciaEncoder = potEncoder;
+      saidaPotenciaManual = alvoPotenciaEncoder / 100.0f;
+      momentoUltimoGiroEncoder = millis();
+      if (girou) {
+        registrarInteracaoEncoder();
+      }
+      if (controleMalhaAtivo) {
+        aplicarSaidaPotenciaManualNoPotenciometro();
+        display.invalidarCache();
+      }
+    }
+  } else if (girou || fabsf(spEncoder - setpointEncoder) > 0.001f) {
     setpointEncoder = spEncoder;
     momentoUltimoGiroEncoder = millis();
     setpointPendenteNaMalha = true;
+    if (girou) {
+      registrarInteracaoEncoder();
+    }
   }
 
-  atualizarSetpointMalhaSeEstavel();
+  if (modoControle == MODO_CONTROLE_PID) {
+    atualizarSetpointMalhaSeEstavel();
+  }
   atualizarMensagemTransicao();
 
   if (encoder.consumirEventoDuploClique()) {
     buzzer.tocarConfirmacao();
+    registrarInteracaoEncoder();
     if (controleMalhaAtivo) {
       desligarMalhaControle();
     }
@@ -359,19 +516,30 @@ void tarefaInterfaceUsuario() {
 
   if (encoder.consumirEventoCliqueLongo()) {
     buzzer.tocarConfirmacao();
+    registrarInteracaoEncoder();
     reiniciarMalhaPid();
   }
 
   if (encoder.consumirEventoClique()) {
+    registrarInteracaoEncoder();
     if (!controleMalhaAtivo) {
       buzzer.tocarConfirmacao();
-      setpointMalha = setpointEncoder;
-      setpointPendenteNaMalha = false;
-      ligarMalhaControle(temperaturaMuitoAbaixoDoAlvo());
+      if (modoControle == MODO_CONTROLE_PID) {
+        setpointMalha = setpointEncoder;
+        setpointPendenteNaMalha = false;
+        ligarMalhaControle(temperaturaMuitoAbaixoDoAlvo());
+      } else {
+        saidaPotenciaManual = alvoPotenciaEncoder / 100.0f;
+        ligarMalhaControle(false);
+        aplicarSaidaPotenciaManualNoPotenciometro();
+      }
     }
   }
 
+  verificarDesligamentoAutomatico();
+
   buzzer.atualizar();
+  display.atualizarIluminacao(controleMalhaAtivo, momentoUltimaInteracaoEncoder);
 }
 
 /**
@@ -398,8 +566,7 @@ void tarefaLeituraSensor() {
 }
 
 /**
- * Tarefa do PID (~PERIODO_PID_MS): calcula OUT; atuador ajusta a cada
- * PERIODO_ATUADOR_POT_MS quando o par (A,B) alvo muda (sem histerese de OUT).
+ * Tarefa do controle (~PERIODO_PID_MS): PID ou potência manual conforme o modo.
  */
 void tarefaMalhaPid(unsigned long instanteAtualMs) {
   if (!controleMalhaAtivo) {
@@ -425,6 +592,18 @@ void tarefaMalhaPid(unsigned long instanteAtualMs) {
     return;
   }
 
+  if (modoControle == MODO_CONTROLE_POTENCIA) {
+    saidaPotenciaManual = alvoPotenciaEncoder / 100.0f;
+    if (deveAplicarSaidaPidNoPotenciometro(instanteAtualMs)) {
+      aplicarSaidaPotenciaManualNoPotenciometro();
+      display.invalidarCache();
+    }
+#if SERIAL_DEPURAR_MALHA
+    imprimirSerialMalha();
+#endif
+    return;
+  }
+
   float tempoSegundos = instanteAtualMs / 1000.0f;
   atualizarSetpointMalhaSeEstavel();
   saidaPid = pid.passo(setpointMalha, temperaturaFiltrada, tempoSegundos);
@@ -441,13 +620,17 @@ void tarefaMalhaPid(unsigned long instanteAtualMs) {
 #endif
 }
 
-/** Tarefa do LCD (~100 ms): linha 3 = OUT do PID em % (comando da malha). */
+/** Tarefa do LCD (~100 ms): linha 0 = uso/energia; linha 3 = potência. */
 void tarefaAtualizarDisplay() {
-  float potCmd = controleMalhaAtivo ? saidaPid : 0.0f;
-  display.atualizar(setpointEncoder, temperaturaFiltrada, potCmd,
-                    potenciometro.passoAtualA(), potenciometro.passoAtualB(),
-                    obterEstadoParaDisplay(), metaAtingida, controleMalhaAtivo,
-                    msgTransicao, setpointPendenteNaMalha);
+  unsigned long agora = millis();
+  float potCmd = potenciaComandoAtual();
+  medidorUso.atualizar(potCmd, controleMalhaAtivo, agora);
+
+  display.atualizar(setpointEncoder, alvoPotenciaEncoder, temperaturaFiltrada,
+                    potCmd, potenciometro.passoAtualA(), potenciometro.passoAtualB(),
+                    obterEstadoParaDisplay(), modoControle, metaAtingida,
+                    controleMalhaAtivo, msgTransicao, setpointPendenteNaMalha,
+                    medidorUso.tempoSegundos(), medidorUso.energiaWh());
 }
 
 // -----------------------------------------------------------------------------
@@ -496,12 +679,17 @@ void setup() {
 
   buzzer.iniciar();
   encoder.iniciar();
+  encoder.definirModoAjuste(ENCODER_AJUSTE_TEMPERATURA);
   setpointEncoder = encoder.setpointC();
+  alvoPotenciaEncoder = encoder.alvoPotenciaPercent();
   setpointMalha = setpointEncoder;
+  saidaPotenciaManual = alvoPotenciaEncoder / 100.0f;
   momentoUltimoGiroEncoder = millis();
+  momentoUltimaInteracaoEncoder = millis();
   setpointPendenteNaMalha = false;
 
   potenciometro.iniciar();
+  medidorUso.iniciar();
 
   if (!MALHA_INICIA_ATIVA) {
     controleMalhaAtivo = false;
@@ -511,6 +699,7 @@ void setup() {
     Serial.println(F("[POT] Standby — potencia 0 % (inicializacao rapida)"));
   } else {
     potenciometro.reiniciarParaMinimo();
+    medidorUso.reiniciar(millis());
     Serial.println(F("[POT] Wipers no minimo (potencia maxima)"));
   }
 
@@ -534,8 +723,10 @@ void setup() {
 
   buzzer.tocarConfirmacao();
   delay(800);  // único delay longo: tempo para o usuário ver o splash no LCD
-  display.atualizar(setpointEncoder, NAN, 0.0f, 0, 0, obterEstadoParaDisplay(), false,
-                    controleMalhaAtivo, msgTransicao, setpointPendenteNaMalha);
+  display.atualizar(setpointEncoder, alvoPotenciaEncoder, NAN, 0.0f, 0, 0,
+                    obterEstadoParaDisplay(), modoControle, false,
+                    controleMalhaAtivo, msgTransicao, setpointPendenteNaMalha,
+                    medidorUso.tempoSegundos(), medidorUso.energiaWh());
 }
 
 void loop() {

@@ -1,11 +1,35 @@
 /**
  * encoder_rotativo.cpp — Quadratura em ISR + debounce do botão
  *
- * Setpoint em ALVO_TEMP_* (config.h). Clique longo reinicia PID no firmware principal.
+ * Setpoint em ALVO_TEMP_* ou ALVO_POT_* (config.h).
+ * Segurar 3 s sem girar troca modo; clique longo (~800 ms) reinicia PID no firmware principal.
  */
 
 #include "encoder_rotativo.h"
 #include "config.h"
+#include <math.h>
+
+static const float POT_PCT_EPS = 0.05f;
+
+static float arredondarPotenciaDecimo(float pct) {
+  return roundf(pct * 10.0f) / 10.0f;
+}
+
+/** Giro normal: ±1 na parte inteira, preservando os décimos (75,3 → 76,3). */
+static float ajustarPotenciaGrosso(float atual, int dir) {
+  atual = arredondarPotenciaDecimo(atual);
+  float inteiro = floorf(atual + POT_PCT_EPS);
+  float frac = atual - inteiro;
+  if (frac < 0.0f) {
+    frac = 0.0f;
+  }
+  return arredondarPotenciaDecimo(inteiro + (float)dir + frac);
+}
+
+/** Botão + giro: altera décimos (75,1 → 75,2). */
+static float ajustarPotenciaFino(float atual, int dir) {
+  return arredondarPotenciaDecimo(atual + (float)dir * ALVO_POT_PASSO_FINO_PCT);
+}
 
 static volatile int8_t ultimoClk = 1;
 static EncoderRotativo* instancia = nullptr;
@@ -33,11 +57,14 @@ void EncoderRotativo::iniciar() {
   pinMode(PINO_ENCODER_DT, INPUT_PULLUP);
   pinMode(PINO_ENCODER_BOTAO, INPUT_PULLUP);
 
+  _modoAjuste = ENCODER_AJUSTE_TEMPERATURA;
   _setpoint = ALVO_TEMP_PADRAO_C;
+  _alvoPotenciaPct = ALVO_POT_PADRAO_PCT;
   _delta = 0;
   _cliquePendente = false;
   _duploCliquePendente = false;
   _cliqueLongoPendente = false;
+  _trocaModoPendente = false;
   _passosGiroPendentes = 0;
   _aguardandoPossivelDuplo = false;
   _ultimoRotacaoMs = 0;
@@ -46,11 +73,20 @@ void EncoderRotativo::iniciar() {
   _botaoEstavaPressionado = false;
   _millisBotaoPressionado = 0;
   _giroComBotaoPressionado = false;
+  _trocaModoJaDisparou = false;
   _acumuladorDetente = 0;
 
   ultimoClk = digitalRead(PINO_ENCODER_CLK);
   instancia = this;
   attachInterrupt(digitalPinToInterrupt(PINO_ENCODER_CLK), isrEncoder, CHANGE);
+}
+
+void EncoderRotativo::definirModoAjuste(ModoAjusteEncoder modo) {
+  _modoAjuste = modo;
+}
+
+ModoAjusteEncoder EncoderRotativo::modoAjuste() const {
+  return _modoAjuste;
 }
 
 void EncoderRotativo::definirSetpoint(float c) {
@@ -67,6 +103,50 @@ float EncoderRotativo::setpointC() const {
   return _setpoint;
 }
 
+void EncoderRotativo::definirAlvoPotenciaPercent(float pct) {
+  pct = arredondarPotenciaDecimo(pct);
+  if (pct < ALVO_POT_MIN_PCT) {
+    pct = ALVO_POT_MIN_PCT;
+  }
+  if (pct > ALVO_POT_MAX_PCT) {
+    pct = ALVO_POT_MAX_PCT;
+  }
+  _alvoPotenciaPct = pct;
+}
+
+float EncoderRotativo::alvoPotenciaPercent() const {
+  return _alvoPotenciaPct;
+}
+
+void EncoderRotativo::aplicarPassoGiro(int passos, bool botaoPressionado) {
+  int passosAplicados = 0;
+  int dir = (passos > 0) ? 1 : -1;
+  int quantidade = (passos > 0) ? passos : -passos;
+  for (int i = 0; i < quantidade; i++) {
+    if (_modoAjuste == ENCODER_AJUSTE_POTENCIA) {
+      float antes = _alvoPotenciaPct;
+      float novo = botaoPressionado
+                       ? ajustarPotenciaFino(_alvoPotenciaPct, dir)
+                       : ajustarPotenciaGrosso(_alvoPotenciaPct, dir);
+      definirAlvoPotenciaPercent(novo);
+      if (fabsf(_alvoPotenciaPct - antes) < 0.0001f) {
+        break;
+      }
+    } else {
+      float passo = botaoPressionado ? ALVO_TEMP_PASSO_FINO_C : ALVO_TEMP_PASSO_C;
+      float antes = _setpoint;
+      definirSetpoint(_setpoint + (float)dir * passo);
+      if (fabsf(_setpoint - antes) < 0.0001f) {
+        break;
+      }
+    }
+    passosAplicados++;
+  }
+  if (passosAplicados > 0) {
+    _passosGiroPendentes += passosAplicados;
+  }
+}
+
 void EncoderRotativo::atualizar() {
   unsigned long agora = millis();
   bool botao = (digitalRead(PINO_ENCODER_BOTAO) == LOW);
@@ -74,12 +154,25 @@ void EncoderRotativo::atualizar() {
   if (botao && !_botaoEstavaPressionado) {
     _millisBotaoPressionado = agora;
     _giroComBotaoPressionado = false;
+    _trocaModoJaDisparou = false;
+  }
+
+  if (botao && !_giroComBotaoPressionado && !_trocaModoJaDisparou) {
+    unsigned long duracaoPressao = agora - _millisBotaoPressionado;
+    if (duracaoPressao >= ENCODER_TROCA_MODO_MS) {
+      _trocaModoPendente = true;
+      _trocaModoJaDisparou = true;
+      _aguardandoPossivelDuplo = false;
+      _cliquePendente = false;
+    }
   }
 
   if (!botao && _botaoEstavaPressionado) {
     unsigned long duracao = agora - _millisBotaoPressionado;
-    if (!_giroComBotaoPressionado && duracao >= ENCODER_CLIQUE_MIN_MS) {
-      if (duracao >= ENCODER_CLIQUE_LONGO_MS) {
+    if (!_giroComBotaoPressionado && !_trocaModoJaDisparou &&
+        duracao >= ENCODER_CLIQUE_MIN_MS) {
+      if (duracao >= ENCODER_CLIQUE_LONGO_MS &&
+          duracao < ENCODER_TROCA_MODO_MS) {
         _cliqueLongoPendente = true;
         _aguardandoPossivelDuplo = false;
         _cliquePendente = false;
@@ -137,22 +230,7 @@ void EncoderRotativo::atualizar() {
     _aguardandoPossivelDuplo = false;
   }
 
-  float passo = botao ? ALVO_TEMP_PASSO_FINO_C : ALVO_TEMP_PASSO_C;
-  int passosAplicados = 0;
-  int dir = (passos > 0) ? 1 : -1;
-  int quantidade = (passos > 0) ? passos : -passos;
-  for (int i = 0; i < quantidade; i++) {
-    float antes = _setpoint;
-    definirSetpoint(_setpoint + (float)dir * passo);
-    if (fabsf(_setpoint - antes) < 0.0001f) {
-      break;
-    }
-    passosAplicados++;
-  }
-  if (passosAplicados == 0) {
-    return;
-  }
-  _passosGiroPendentes += passosAplicados;
+  aplicarPassoGiro(passos, botao);
 }
 
 bool EncoderRotativo::consumirEventoRotacao() {
@@ -191,6 +269,15 @@ bool EncoderRotativo::consumirEventoCliqueLongo() {
   }
   _cliqueLongoPendente = false;
   _aguardandoPossivelDuplo = false;
+  _ultimoCliqueMs = millis();
+  return true;
+}
+
+bool EncoderRotativo::consumirEventoTrocaModo() {
+  if (!_trocaModoPendente) {
+    return false;
+  }
+  _trocaModoPendente = false;
   _ultimoCliqueMs = millis();
   return true;
 }

@@ -70,4 +70,20 @@ inline void lcdI2cIniciar(LiquidCrystal_I2C& lcd) {
 
 #endif
 
+inline void lcdI2cBacklightOn(LiquidCrystal_I2C& lcd) {
+#if LCD_USA_NEW_LIQUIDCRYSTAL
+  lcd.setBacklight(255);
+#else
+  lcd.backlight();
+#endif
+}
+
+inline void lcdI2cBacklightOff(LiquidCrystal_I2C& lcd) {
+#if LCD_USA_NEW_LIQUIDCRYSTAL
+  lcd.setBacklight(0);
+#else
+  lcd.noBacklight();
+#endif
+}
+
 #endif // LCD_I2C_COMPAT_H

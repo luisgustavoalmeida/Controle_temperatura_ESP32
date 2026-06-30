@@ -32,9 +32,12 @@ private:
   BuzzerPadrao _padraoAtual;
   uint8_t _faseSequencia;       // alterna ligar/desligar tom
   unsigned long _proximaAcaoMs;
+  unsigned long _proximaAcaoCliqueUs;
   bool _tocando;
 
   void iniciarPadrao(BuzzerPadrao padrao);
+  void pararSinal();
+  void iniciarPulsoClique();
   static uint16_t frequenciaHz(uint8_t indiceNota, BuzzerPadrao padrao);
   static uint16_t duracaoMs(uint8_t indiceNota, BuzzerPadrao padrao);
   static uint8_t quantidadeNotas(BuzzerPadrao padrao);

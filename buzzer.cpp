@@ -2,33 +2,53 @@
  * buzzer.cpp — Sequências não bloqueantes (tone/noTone)
  *
  * Pino: PINO_BUZZER (config.h). Chame atualizar() a cada PERIODO_LOOP_MS.
+ * Clique do encoder: tone imediato a cada detente; retrigger no giro rápido.
  */
 
 #include "buzzer.h"
 #include "config.h"
 
+void Buzzer::pararSinal() {
+  noTone(PINO_BUZZER);
+  digitalWrite(PINO_BUZZER, LOW);
+}
+
 void Buzzer::iniciar() {
   pinMode(PINO_BUZZER, OUTPUT);
-  digitalWrite(PINO_BUZZER, LOW);
+  pararSinal();
   _padraoAtual = BUZZ_NENHUM;
   _faseSequencia = 0;
   _proximaAcaoMs = 0;
+  _proximaAcaoCliqueUs = 0;
   _tocando = false;
-  noTone(PINO_BUZZER);
 }
 
 void Buzzer::iniciarPadrao(BuzzerPadrao padrao) {
-  if (padrao == BUZZ_CLIQUE && _tocando) {
-    noTone(PINO_BUZZER);
-  }
+  pararSinal();
   _padraoAtual = padrao;
   _faseSequencia = 0;
   _tocando = true;
   _proximaAcaoMs = millis();
 }
 
+void Buzzer::iniciarPulsoClique() {
+  if (_tocando && _padraoAtual == BUZZ_CLIQUE) {
+    noTone(PINO_BUZZER);
+    digitalWrite(PINO_BUZZER, LOW);
+  }
+  tone(PINO_BUZZER, BUZZ_CLIQUE_HZ);
+  _padraoAtual = BUZZ_CLIQUE;
+  _faseSequencia = 1;
+  _tocando = true;
+  _proximaAcaoCliqueUs = micros() + BUZZ_CLIQUE_US;
+}
+
 void Buzzer::tocarClique() {
-  iniciarPadrao(BUZZ_CLIQUE);
+  if (_tocando && _padraoAtual != BUZZ_CLIQUE) {
+    pararSinal();
+    _tocando = false;
+  }
+  iniciarPulsoClique();
 }
 
 void Buzzer::tocarConfirmacao() {
@@ -45,7 +65,6 @@ void Buzzer::tocarForaDaMeta() {
 
 uint8_t Buzzer::quantidadeNotas(BuzzerPadrao padrao) {
   switch (padrao) {
-    case BUZZ_CLIQUE: return 1;
     case BUZZ_CONFIRMACAO: return 2;
     case BUZZ_META_ATINGIDA: return 3;
     case BUZZ_FORA_DA_META: return 3;
@@ -55,8 +74,6 @@ uint8_t Buzzer::quantidadeNotas(BuzzerPadrao padrao) {
 
 uint16_t Buzzer::frequenciaHz(uint8_t indiceNota, BuzzerPadrao padrao) {
   switch (padrao) {
-    case BUZZ_CLIQUE:
-      return 2000;
     case BUZZ_CONFIRMACAO:
       return (indiceNota == 0) ? 1800 : 2400;
     case BUZZ_META_ATINGIDA:
@@ -75,7 +92,6 @@ uint16_t Buzzer::frequenciaHz(uint8_t indiceNota, BuzzerPadrao padrao) {
 uint16_t Buzzer::duracaoMs(uint8_t indiceNota, BuzzerPadrao padrao) {
   (void)indiceNota;
   switch (padrao) {
-    case BUZZ_CLIQUE: return 30;
     case BUZZ_CONFIRMACAO: return 100;
     case BUZZ_META_ATINGIDA: return 120;
     case BUZZ_FORA_DA_META: return 140;
@@ -88,6 +104,16 @@ void Buzzer::atualizar() {
     return;
   }
 
+  if (_padraoAtual == BUZZ_CLIQUE) {
+    if ((long)(micros() - _proximaAcaoCliqueUs) < 0) {
+      return;
+    }
+    pararSinal();
+    _tocando = false;
+    _padraoAtual = BUZZ_NENHUM;
+    return;
+  }
+
   unsigned long agora = millis();
   if (agora < _proximaAcaoMs) {
     return;
@@ -95,7 +121,7 @@ void Buzzer::atualizar() {
 
   uint8_t totalFases = quantidadeNotas(_padraoAtual) * 2;
   if (_faseSequencia >= totalFases) {
-    noTone(PINO_BUZZER);
+    pararSinal();
     _tocando = false;
     _padraoAtual = BUZZ_NENHUM;
     return;
