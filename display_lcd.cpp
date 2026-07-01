@@ -34,6 +34,7 @@ void DisplayLCD::invalidarCache() {
   _ultimaMsgTransicao = MSG_NENHUMA;
   _ultimoFrameAnimPid = 255;
   _ultimoSetpointPendente = false;
+  _ultimaDirecaoAjusteAlvo = 0;
   _ultimoTempoUsoSeg = 0xFFFFFFFFUL;
   _ultimaEnergiaWh = -1.0f;
 }
@@ -214,8 +215,8 @@ void DisplayLCD::atualizar(float setpointC, float alvoPotenciaPct, float atualC,
                            float potenciaCmd01, uint8_t passoPotA, uint8_t passoPotB,
                            EstadoSistema estado, ModoControle modoControle, bool metaAtingida,
                            bool controleAtivo, MensagemTransicao msgTransicao,
-                           bool setpointPendenteNaMalha, uint32_t tempoUsoSeg,
-                           float energiaWh) {
+                           bool setpointPendenteNaMalha, int8_t direcaoAjusteAlvoTemp,
+                           uint32_t tempoUsoSeg, float energiaWh) {
   if (!_ok) {
     return;
   }
@@ -244,6 +245,7 @@ void DisplayLCD::atualizar(float setpointC, float alvoPotenciaPct, float atualC,
       (metaAtingida != _ultimaMeta) || (controleAtivo != _ultimoControleAtivo) ||
       (msgTransicao != _ultimaMsgTransicao) ||
       (setpointPendenteNaMalha != _ultimoSetpointPendente) ||
+      (direcaoAjusteAlvoTemp != _ultimaDirecaoAjusteAlvo) ||
       (buscandoTemperatura && frameAnimPid != _ultimoFrameAnimPid);
 
   if (!precisaAtualizar) {
@@ -263,6 +265,7 @@ void DisplayLCD::atualizar(float setpointC, float alvoPotenciaPct, float atualC,
   _ultimaMsgTransicao = msgTransicao;
   _ultimoFrameAnimPid = frameAnimPid;
   _ultimoSetpointPendente = setpointPendenteNaMalha;
+  _ultimaDirecaoAjusteAlvo = direcaoAjusteAlvoTemp;
   _ultimoTempoUsoSeg = tempoUsoSeg;
   _ultimaEnergiaWh = energiaWh;
 
@@ -279,7 +282,8 @@ void DisplayLCD::atualizar(float setpointC, float alvoPotenciaPct, float atualC,
       snprintf(buffer, sizeof(buffer), "Alvo: %5.1f %%", alvoPotenciaPct);
     }
   } else if (setpointPendenteNaMalha) {
-    snprintf(buffer, sizeof(buffer), "Alvo: %6.2f >", setpointC);
+    char seta = (direcaoAjusteAlvoTemp < 0) ? '<' : '>';
+    snprintf(buffer, sizeof(buffer), "Alvo: %6.2f %c", setpointC, seta);
   } else {
     snprintf(buffer, sizeof(buffer), "Alvo: %6.2f C", setpointC);
   }

@@ -79,11 +79,11 @@
 // ===========================================================================
 
 /** Ganho proporcional — reação à diferença SP − PV (°C). */
-#define PID_GANHO_KP           0.05f
+#define PID_GANHO_KP           0.048f
 /** Ganho integral — corrige erro persistente (cuidado com overshoot). */
-#define PID_GANHO_KI           0.002f
+#define PID_GANHO_KI           0.0024f
 /** Ganho derivativo — amortecimento ante mudanças rápidas de PV. */
-#define PID_GANHO_KD           0.27f
+#define PID_GANHO_KD           0.298f
 
 /** Limites da saída do PID: 0 = potência mínima, 1 = potência máxima. */
 #define PID_SAIDA_MIN          0.0f
@@ -342,6 +342,6 @@
  * true  = imprime linha [MALHA] a cada PERIODO_PID_MS (SP, PV, OUT, passos).
  * false = Serial silenciosa em operação normal (recomendado em produção).
  */
-#define SERIAL_DEPURAR_MALHA       true
+#define SERIAL_DEPURAR_MALHA       false
 
 #endif // CONFIG_H

@@ -45,7 +45,7 @@ public:
                  uint8_t passoPotA, uint8_t passoPotB, EstadoSistema estado,
                  ModoControle modoControle, bool metaAtingida, bool controleAtivo,
                  MensagemTransicao msgTransicao, bool setpointPendenteNaMalha,
-                 uint32_t tempoUsoSeg, float energiaWh);
+                 int8_t direcaoAjusteAlvoTemp, uint32_t tempoUsoSeg, float energiaWh);
 
   void invalidarCache();
 
@@ -96,6 +96,7 @@ private:
   MensagemTransicao _ultimaMsgTransicao;
   uint8_t _ultimoFrameAnimPid;
   bool _ultimoSetpointPendente;
+  int8_t _ultimaDirecaoAjusteAlvo;
   uint32_t _ultimoTempoUsoSeg;
   float _ultimaEnergiaWh;
 

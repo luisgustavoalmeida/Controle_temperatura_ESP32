@@ -52,6 +52,8 @@ float setpointMalha = ALVO_TEMP_PADRAO_C;
 float alvoPotenciaEncoder = ALVO_POT_PADRAO_PCT;
 float saidaPotenciaManual = 0.0f;
 bool setpointPendenteNaMalha = false;
+/** -1 = diminuindo, 0 = estavel, 1 = aumentando (enquanto alvo pendente). */
+int8_t direcaoAjusteAlvoTemp = 0;
 unsigned long momentoUltimoGiroEncoder = 0;
 unsigned long momentoUltimaInteracaoEncoder = 0;
 
@@ -321,6 +323,7 @@ void alternarModoControle() {
       setpointEncoder = setpointMalha;
       encoder.definirSetpoint(setpointEncoder);
       setpointPendenteNaMalha = false;
+      direcaoAjusteAlvoTemp = 0;
       if (controleMalhaAtivo) {
         pid.reiniciar();
         saidaPid = PID_SAIDA_MIN;
@@ -423,10 +426,12 @@ void atualizarSetpointMalhaSeEstavel() {
   }
   if (fabsf(setpointMalha - setpointEncoder) < 0.001f) {
     setpointPendenteNaMalha = false;
+    direcaoAjusteAlvoTemp = 0;
     return;
   }
   setpointMalha = setpointEncoder;
   setpointPendenteNaMalha = false;
+  direcaoAjusteAlvoTemp = 0;
   estavaNaMeta = temperaturaAtingiuMeta();
   display.invalidarCache();
   Serial.print(F("[SP] Alvo aplicado na malha: "));
@@ -493,6 +498,11 @@ void tarefaInterfaceUsuario() {
       }
     }
   } else if (girou || fabsf(spEncoder - setpointEncoder) > 0.001f) {
+    if (spEncoder > setpointEncoder + 0.0001f) {
+      direcaoAjusteAlvoTemp = 1;
+    } else if (spEncoder < setpointEncoder - 0.0001f) {
+      direcaoAjusteAlvoTemp = -1;
+    }
     setpointEncoder = spEncoder;
     momentoUltimoGiroEncoder = millis();
     setpointPendenteNaMalha = true;
@@ -527,6 +537,7 @@ void tarefaInterfaceUsuario() {
       if (modoControle == MODO_CONTROLE_PID) {
         setpointMalha = setpointEncoder;
         setpointPendenteNaMalha = false;
+        direcaoAjusteAlvoTemp = 0;
         ligarMalhaControle(temperaturaMuitoAbaixoDoAlvo());
       } else {
         saidaPotenciaManual = alvoPotenciaEncoder / 100.0f;
@@ -630,7 +641,8 @@ void tarefaAtualizarDisplay() {
                     potCmd, potenciometro.passoAtualA(), potenciometro.passoAtualB(),
                     obterEstadoParaDisplay(), modoControle, metaAtingida,
                     controleMalhaAtivo, msgTransicao, setpointPendenteNaMalha,
-                    medidorUso.tempoSegundos(), medidorUso.energiaWh());
+                    direcaoAjusteAlvoTemp, medidorUso.tempoSegundos(),
+                    medidorUso.energiaWh());
 }
 
 // -----------------------------------------------------------------------------
@@ -687,6 +699,7 @@ void setup() {
   momentoUltimoGiroEncoder = millis();
   momentoUltimaInteracaoEncoder = millis();
   setpointPendenteNaMalha = false;
+  direcaoAjusteAlvoTemp = 0;
 
   potenciometro.iniciar();
   medidorUso.iniciar();
@@ -726,7 +739,8 @@ void setup() {
   display.atualizar(setpointEncoder, alvoPotenciaEncoder, NAN, 0.0f, 0, 0,
                     obterEstadoParaDisplay(), modoControle, false,
                     controleMalhaAtivo, msgTransicao, setpointPendenteNaMalha,
-                    medidorUso.tempoSegundos(), medidorUso.energiaWh());
+                    direcaoAjusteAlvoTemp, medidorUso.tempoSegundos(),
+                    medidorUso.energiaWh());
 }
 
 void loop() {
