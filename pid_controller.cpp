@@ -1,7 +1,7 @@
 /**
  * pid_controller.cpp — Implementação do PID
  *
- * Erro = setpoint - medida. Saída alta → mais potência no chuveiro (TPL0501).
+ * Erro = setpoint - medida. Saída alta → mais potência no chuveiro (dimmer).
  */
 
 #include "pid_controller.h"
@@ -16,6 +16,7 @@ ControladorPID::ControladorPID()
       _integral(0.0f),
       _integralMax(0.0f),
       _ultimoErro(0.0f),
+      _ultimoValorMedido(0.0f),
       _ultimoTermoP(0.0f),
       _ultimoTermoI(0.0f),
       _ultimoTermoD(0.0f),
@@ -27,8 +28,20 @@ ControladorPID::ControladorPID()
 void ControladorPID::reiniciar() {
   _integral = 0.0f;
   _ultimoErro = 0.0f;
+  _ultimoValorMedido = 0.0f;
   _ultimoTempo = 0.0f;
   _primeiroPasso = true;
+}
+
+void ControladorPID::sincronizarIntegralParaSaida(float saida, float valorDesejado,
+                                                   float valorMedido) {
+  float erro = valorDesejado - valorMedido;
+  float termoP = _kp * erro;
+  float ki = (_ki > 1e-9f) ? _ki : 1e-9f;
+  _integral = (saida - termoP - _ultimoTermoD) / ki;
+  _integral = limitar(_integral, -_integralMax, _integralMax);
+  _ultimoErro = erro;
+  _ultimoTermoI = _ki * _integral;
 }
 
 void ControladorPID::definirLimites(float saidaMinima, float saidaMaxima) {
@@ -69,11 +82,13 @@ float ControladorPID::passo(float valorDesejado, float valorMedido, float tempoA
 
   float termoD = 0.0f;
   if (!_primeiroPasso) {
-    float derivadaErro = (erro - _ultimoErro) / deltaT;
-    termoD = _kd * derivadaErro;
+    // Derivada na medida (nao no erro) — evita "chute" quando o setpoint muda.
+    float derivadaMedida = (valorMedido - _ultimoValorMedido) / deltaT;
+    termoD = -_kd * derivadaMedida;
   }
 
   _ultimoErro = erro;
+  _ultimoValorMedido = valorMedido;
   _ultimoTermoP = termoP;
   _ultimoTermoI = termoI;
   _ultimoTermoD = termoD;

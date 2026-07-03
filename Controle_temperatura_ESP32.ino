@@ -6,7 +6,7 @@
  * O que este firmware faz:
  *   1. Lê a temperatura da água (sensor DS18B20).
  *   2. O usuário escolhe a temperatura desejada no encoder rotativo.
- *   3. PID OUT 0..1 → passos TPL0501 via SPI; atuador a cada ciclo PID.
+ *   3. PID OUT 0..1 → dimmer RobotDyn (0..100 %); atuador a cada ciclo PID.
  *   4. A malha nao pausa na meta: regulacao continua (histerese so no buzzer/backlight).
  *   5. Duplo clique = standby (pot. 0); clique = religar; longo = reiniciar PID (modo temp).
  *   6. Segurar encoder 3 s sem girar = alternar PID ↔ potência manual.
@@ -22,8 +22,7 @@
 
 #include "config.h"
 #include "pid_controller.h"
-#include "potenciometro_map.h"
-#include "atuador_potenciometro.h"
+#include "atuador_dimmer.h"
 #include "sensor_ds18b20.h"
 #include "display_lcd.h"
 #include "encoder_rotativo.h"
@@ -34,7 +33,7 @@
 // Módulos de hardware (um objeto por periférico)
 // =============================================================================
 ControladorPID pid;           // Malha de controle
-AtuadorPotenciometro potenciometro;  // Atuador (1× ou 2× TPL0501)
+AtuadorDimmer dimmer;  // RobotDyn AC Light Dimmer (TRIAC)
 SensorDS18B20 sensorTemp;     // Entrada (temperatura)
 DisplayLCD display;           // Saída visual
 EncoderRotativo encoder;      // Entrada do usuário (setpoint)
@@ -46,7 +45,7 @@ MedidorUso medidorUso;        // Cronômetro + energia ∫P dt
 // =============================================================================
 float temperaturaBruta = NAN;      // Última leitura direta do DS18B20 [°C]
 float temperaturaFiltrada = NAN;   // Média móvel (menos ruído) [°C]
-float saidaPid = 0.0f;             // PID OUT 0..1 → potência (1=máx); passo via escala ideal 150 kΩ
+float saidaPid = 0.0f;             // PID OUT 0..1 → dimmer 0..100 %
 float setpointEncoder = ALVO_TEMP_PADRAO_C;
 float setpointMalha = ALVO_TEMP_PADRAO_C;
 float alvoPotenciaEncoder = ALVO_POT_PADRAO_PCT;
@@ -65,10 +64,16 @@ bool estavaNaMeta = false;
 bool controleMalhaAtivo = MALHA_INICIA_ATIVA;
 MensagemTransicao msgTransicao = MSG_NENHUMA;
 unsigned long msgTransicaoAteMs = 0;
+bool ultimoZcPresente = false;
 
 // Filtro de temperatura — tamanho em FILTRO_TEMP_AMOSTRAS (config.h)
 float historicoTemp[FILTRO_TEMP_AMOSTRAS];
 uint8_t indiceHistorico = 0;
+
+/** Falhas consecutivas antes de modo seguro; recuperacao apos leituras boas. */
+uint8_t falhasConsecutivasSensor = 0;
+uint8_t sucessosConsecutivosSensor = 0;
+bool sensorEmErroPersistente = false;
 
 // =============================================================================
 // Controle de tempo (cada tarefa só roda quando o intervalo expira)
@@ -78,11 +83,13 @@ unsigned long momentoUltimoSensor = 0;
 unsigned long momentoUltimoPid = 0;
 unsigned long momentoUltimoLcd = 0;
 
-/** Histerese do atuador: último OUT aplicado no TPL0501 (−1 = nunca aplicou). */
+/** Histerese do atuador: último OUT aplicado no dimmer (−1 = nunca aplicou). */
 float saidaPidUltimoAplicado = -1.0f;
 unsigned long momentoUltimoAjustePot = 0;
 
 // (Conversão DS18B20: estado interno em sensor_ds18b20.cpp — não bloqueia o loop)
+
+void entrarModoSeguroPorFalhaSensor();
 
 // -----------------------------------------------------------------------------
 // Filtro de temperatura
@@ -112,6 +119,75 @@ void aplicarFiltroTemperatura(float novaLeituraC) {
   temperaturaFiltrada = (quantidadeValida > 0)
                             ? (soma / (float)quantidadeValida)
                             : novaLeituraC;
+}
+
+/** true se a leitura esta na faixa e sem salto absurdo em relacao ao filtro. */
+bool leituraSensorPlausivel(float novaLeituraC) {
+  if (isnan(novaLeituraC)) {
+    return false;
+  }
+  if (novaLeituraC < SENSOR_LEITURA_MIN_C || novaLeituraC > SENSOR_LEITURA_MAX_C) {
+    return false;
+  }
+  if (!isnan(temperaturaFiltrada) &&
+      fabsf(novaLeituraC - temperaturaFiltrada) > SENSOR_SALTO_MAXIMO_C) {
+    return false;
+  }
+  return true;
+}
+
+void registrarFalhaLeituraSensor() {
+  falhasConsecutivasSensor++;
+  sucessosConsecutivosSensor = 0;
+
+  if (!sensorEmErroPersistente &&
+      falhasConsecutivasSensor >= SENSOR_FALHAS_ANTES_ERRO) {
+    sensorEmErroPersistente = true;
+    Serial.println(F("[SENSOR] Falha persistente — modo seguro"));
+    entrarModoSeguroPorFalhaSensor();
+    display.invalidarCache();
+  } else if (!sensorEmErroPersistente) {
+    Serial.print(F("[SENSOR] Leitura invalida ("));
+    Serial.print(falhasConsecutivasSensor);
+    Serial.print(F("/"));
+    Serial.print(SENSOR_FALHAS_ANTES_ERRO);
+    Serial.println(F(") — nova tentativa"));
+  }
+
+  if (falhasConsecutivasSensor > 0 &&
+      (falhasConsecutivasSensor % SENSOR_REENUM_INTERVALO) == 0) {
+    sensorTemp.tentarReenumerar();
+  }
+}
+
+void recuperarSensorAposErro() {
+  if (controleMalhaAtivo && modoControle == MODO_CONTROLE_PID &&
+      !isnan(temperaturaFiltrada)) {
+    pid.sincronizarIntegralParaSaida(saidaPid, setpointMalha, temperaturaFiltrada);
+    estavaNaMeta = temperaturaAtingiuMeta();
+  }
+  display.invalidarCache();
+}
+
+void registrarLeituraSensorOk(float novaLeituraC) {
+  falhasConsecutivasSensor = 0;
+  temperaturaBruta = novaLeituraC;
+  aplicarFiltroTemperatura(novaLeituraC);
+
+  if (!sensorEmErroPersistente) {
+    sucessosConsecutivosSensor = 0;
+    return;
+  }
+
+  sucessosConsecutivosSensor++;
+  if (sucessosConsecutivosSensor < SENSOR_SUCESSOS_RECUPERACAO) {
+    return;
+  }
+
+  sucessosConsecutivosSensor = 0;
+  sensorEmErroPersistente = false;
+  Serial.println(F("[SENSOR] Recuperado — retomando controle"));
+  recuperarSensorAposErro();
 }
 
 // -----------------------------------------------------------------------------
@@ -154,41 +230,74 @@ void avisarMudancaDeMeta(bool naMetaAgora) {
  * Modo seguro: sensor falhou ou leitura inválida.
  * Coloca potência mínima no chuveiro e zera o estado interno do PID.
  */
-/** Registra instante e OUT do último comando enviado ao TPL0501. */
-void registrarAplicacaoPot(float outAplicado) {
+/** Registra instante e OUT do último comando enviado ao dimmer. */
+void registrarAplicacaoDimmer(float outAplicado) {
   saidaPidUltimoAplicado = outAplicado;
   momentoUltimoAjustePot = millis();
 }
 
-/** OUT (0..1) → TPL0501: salto SPI direto. */
-void aplicarSaidaPidNoPotenciometro() {
-  potenciometro.definirSaidaNormalizadaRapida(saidaPid);
-  registrarAplicacaoPot(saidaPid);
+/** OUT (0..1) → dimmer 0..100 %. */
+void aplicarSaidaPidNoDimmer() {
+  dimmer.definirSaidaNormalizadaRapida(saidaPid);
+  registrarAplicacaoDimmer(saidaPid);
 }
 
-void aplicarSaidaPotenciaManualNoPotenciometro() {
-  potenciometro.definirSaidaNormalizadaRapida(saidaPotenciaManual);
-  registrarAplicacaoPot(saidaPotenciaManual);
+void aplicarSaidaPotenciaManualNoDimmer() {
+  dimmer.definirSaidaNormalizadaRapida(saidaPotenciaManual);
+  registrarAplicacaoDimmer(saidaPotenciaManual);
 }
 
-/** Standby: potencia 0 % sem alterar saidaPid (memoria da malha). */
-void aplicarPotenciometroStandby() {
-  potenciometro.definirSaidaNormalizadaRapida(PID_SAIDA_MIN);
-  registrarAplicacaoPot(PID_SAIDA_MIN);
+/** Standby: potência 0 % sem alterar saidaPid (memória da malha). */
+void aplicarDimmerStandby() {
+  dimmer.definirSaidaNormalizadaRapida(PID_SAIDA_MIN);
+  registrarAplicacaoDimmer(PID_SAIDA_MIN);
 }
 
-/** true se passou PERIODO_ATUADOR_POT_MS e o OUT do PID mudou. */
-bool deveAplicarSaidaPidNoPotenciometro(unsigned long instanteAtualMs) {
+/** true se ha zero-cross recente no dimmer (rede/chuveiro energizado), mesmo com malha off. */
+bool chuveiroEnergizadoNaRede() {
+  return dimmer.redeComZeroCross();
+}
+
+/** Cronômetro/energia: malha ligada e AC presente (zero-cross recente). */
+bool medidorDeveContar() {
+  return controleMalhaAtivo && dimmer.redeComZeroCross();
+}
+
+/** Evita beep espúrio ao ligar/desligar a malha com ZC já presente. */
+void sincronizarEstadoZeroCrossBuzzer() {
+  ultimoZcPresente = dimmer.redeComZeroCross();
+}
+
+/** Aviso sonoro/visual quando a rede/chuveiro entra ou sai (independe da malha). */
+void verificarTransicaoZeroCross() {
+  bool zc = dimmer.redeComZeroCross();
+  if (zc == ultimoZcPresente) {
+    return;
+  }
+  ultimoZcPresente = zc;
+  if (zc) {
+    buzzer.tocarRedePresente();
+    display.piscarRedePresente();
+    Serial.println(F("[DIM] Zero-cross detectado — chuveiro energizado"));
+  } else {
+    buzzer.tocarRedeAusente();
+    display.piscarRedeAusente();
+    Serial.println(F("[DIM] Zero-cross perdido — chuveiro desenergizado"));
+  }
+}
+
+/** true se passou PERIODO_ATUADOR_DIMMER_MS e o OUT desejado mudou. */
+bool deveAplicarSaidaNoDimmer(unsigned long instanteAtualMs, float outDesejado) {
   if (saidaPidUltimoAplicado < -0.5f) {
     return true;
   }
-  if ((instanteAtualMs - momentoUltimoAjustePot) < PERIODO_ATUADOR_POT_MS) {
+  if ((instanteAtualMs - momentoUltimoAjustePot) < PERIODO_ATUADOR_DIMMER_MS) {
     return false;
   }
-#if POT_HISTERESIS_SAIDA_ATIVA
-  return (fabsf(saidaPid - saidaPidUltimoAplicado) > POT_HISTERESIS_SAIDA_LIMIAR);
+#if DIMMER_HISTERESIS_SAIDA_ATIVA
+  return (fabsf(outDesejado - saidaPidUltimoAplicado) > DIMMER_HISTERESIS_SAIDA_LIMIAR);
 #else
-  return (fabsf(saidaPid - saidaPidUltimoAplicado) > 0.0001f);
+  return (fabsf(outDesejado - saidaPidUltimoAplicado) > 0.0001f);
 #endif
 }
 
@@ -206,7 +315,7 @@ void entrarModoSeguroPorFalhaSensor() {
   saidaPotenciaManual = PID_SAIDA_MIN;
   alvoPotenciaEncoder = ALVO_POT_MIN_PCT;
   encoder.definirAlvoPotenciaPercent(alvoPotenciaEncoder);
-  aplicarSaidaPidNoPotenciometro();
+  aplicarSaidaPidNoDimmer();
   pid.reiniciar();
 }
 
@@ -241,11 +350,11 @@ void verificarDesligamentoAutomatico() {
 /** Standby: pot. 0 %; preserva saidaPid e estado do PID. */
 void desligarMalhaControle(bool porInatividade) {
   unsigned long agora = millis();
-  medidorUso.atualizar(potenciaComandoAtual(), true, agora);
+  medidorUso.atualizar(potenciaComandoAtual(), medidorDeveContar(), agora);
   medidorUso.atualizar(0.0f, false, agora);
 
   controleMalhaAtivo = false;
-  aplicarPotenciometroStandby();
+  aplicarDimmerStandby();
   estavaNaMeta = false;
   metaAtingida = false;
   if (porInatividade) {
@@ -268,12 +377,12 @@ void ligarMalhaControle(bool reiniciarPid) {
   if (modoControle == MODO_CONTROLE_PID && reiniciarPid) {
     pid.reiniciar();
     saidaPid = PID_SAIDA_MIN;
-    aplicarSaidaPidNoPotenciometro();
+    aplicarSaidaPidNoDimmer();
   } else if (modoControle == MODO_CONTROLE_POTENCIA) {
     saidaPotenciaManual = alvoPotenciaEncoder / 100.0f;
-    aplicarSaidaPotenciaManualNoPotenciometro();
+    aplicarSaidaPotenciaManualNoDimmer();
   } else {
-    aplicarSaidaPidNoPotenciometro();
+    aplicarSaidaPidNoDimmer();
   }
   estavaNaMeta = false;
   metaAtingida = false;
@@ -300,7 +409,7 @@ void reiniciarMalhaPid() {
   metaAtingida = false;
   if (controleMalhaAtivo) {
     saidaPid = PID_SAIDA_MIN;
-    aplicarSaidaPidNoPotenciometro();
+    aplicarSaidaPidNoDimmer();
   }
   Serial.println(F("[CTRL] PID reiniciado (clique longo)"));
 }
@@ -347,9 +456,9 @@ void alternarModoControle() {
 
   if (controleMalhaAtivo) {
     if (modoControle == MODO_CONTROLE_POTENCIA) {
-      aplicarSaidaPotenciaManualNoPotenciometro();
+      aplicarSaidaPotenciaManualNoDimmer();
     } else {
-      aplicarSaidaPidNoPotenciometro();
+      aplicarSaidaPidNoDimmer();
     }
   }
 }
@@ -395,28 +504,32 @@ void imprimirSerialMalha() {
     Serial.print(temperaturaFiltrada, 2);
   }
   Serial.print(F(" PCT_CMD="));
-  Serial.print(potenciometro.potenciaAlvoPercentual(), 3);
+  Serial.print(dimmer.potenciaAlvoPercentual(), 3);
   Serial.print(F(" PCT="));
-  Serial.print(potenciometro.potenciaAtualPercentual(), 3);
+  Serial.print(dimmer.potenciaAtualPercentual(), 3);
   float outRef = (modoControle == MODO_CONTROLE_POTENCIA) ? saidaPotenciaManual
                                                           : saidaPid;
-  if (fabsf(potenciometro.potenciaAtualPercentual() / 100.0f - outRef)
-      > SERIAL_TOLERANCIA_ERRO_POT) {
+  if (fabsf(dimmer.potenciaAtualPercentual() / 100.0f - outRef)
+      > SERIAL_TOLERANCIA_ERRO_DIM) {
     Serial.print(F(" dPOT="));
-    Serial.print(potenciometro.potenciaAtualPercentual() - outRef * 100.0f, 2);
+    Serial.print(dimmer.potenciaAtualPercentual() - outRef * 100.0f, 2);
   }
-  Serial.print(F(" POT="));
-  Serial.print(potenciometro.passoAtualA());
-#if POT_USA_DOIS_CHIPS
-  Serial.print(F("/"));
-  Serial.print(potenciometro.passoAtualB());
-#endif
+  Serial.print(F(" CMD="));
+  Serial.print(dimmer.comandoDimmerPercentual(), 1);
+  Serial.print(F(" DIM="));
+  Serial.print(dimmer.nivelAtual());
+  Serial.print(F(" CUR="));
+  Serial.print(dimmer.tipoCurvaBiblioteca());
+  Serial.print(F(" DLY_US="));
+  Serial.print(dimmer.atrasoDisparoUs());
   Serial.print(F(" META="));
   Serial.println(metaAtingida ? 1 : 0);
 }
 #endif
 
-/** Copia setpointEncoder -> setpointMalha apos pausa sem giro no encoder. */
+/** Copia setpointEncoder -> setpointMalha apos pausa sem giro (ALVO_TEMP_PAUSA_MS).
+ *  Enquanto pendente, o PID continua no setpointMalha antigo; so o LCD/encoder mudam.
+ */
 void atualizarSetpointMalhaSeEstavel() {
   if (!setpointPendenteNaMalha) {
     return;
@@ -432,6 +545,7 @@ void atualizarSetpointMalhaSeEstavel() {
   setpointMalha = setpointEncoder;
   setpointPendenteNaMalha = false;
   direcaoAjusteAlvoTemp = 0;
+  pid.sincronizarIntegralParaSaida(saidaPid, setpointMalha, temperaturaFiltrada);
   estavaNaMeta = temperaturaAtingiuMeta();
   display.invalidarCache();
   Serial.print(F("[SP] Alvo aplicado na malha: "));
@@ -439,7 +553,7 @@ void atualizarSetpointMalhaSeEstavel() {
 }
 
 EstadoSistema obterEstadoParaDisplay() {
-  if (!sensorTemp.sensorOk()) {
+  if (sensorEmErroPersistente) {
     return ESTADO_SENSOR_ERRO;
   }
   if (!sensorTemp.jaObteveLeituraValida()) {
@@ -464,6 +578,7 @@ EstadoSistema obterEstadoParaDisplay() {
  */
 void tarefaInterfaceUsuario() {
   buzzer.atualizar();
+  verificarTransicaoZeroCross();
   encoder.atualizar();
 
   if (controleMalhaAtivo && digitalRead(PINO_ENCODER_BOTAO) == LOW) {
@@ -493,7 +608,7 @@ void tarefaInterfaceUsuario() {
         registrarInteracaoEncoder();
       }
       if (controleMalhaAtivo) {
-        aplicarSaidaPotenciaManualNoPotenciometro();
+        aplicarSaidaPotenciaManualNoDimmer();
         display.invalidarCache();
       }
     }
@@ -542,7 +657,7 @@ void tarefaInterfaceUsuario() {
       } else {
         saidaPotenciaManual = alvoPotenciaEncoder / 100.0f;
         ligarMalhaControle(false);
-        aplicarSaidaPotenciaManualNoPotenciometro();
+        aplicarSaidaPotenciaManualNoDimmer();
       }
     }
   }
@@ -562,18 +677,20 @@ void tarefaInterfaceUsuario() {
 void tarefaLeituraSensor() {
   float novaLeitura = NAN;
 
+  if (!sensorTemp.sensorOk()) {
+    sensorTemp.tentarReenumerar();
+  }
+
   if (!sensorTemp.atualizar(&novaLeitura)) {
     return;  // conversão ainda em andamento — sair sem bloquear
   }
 
-  temperaturaBruta = novaLeitura;
-
-  if (isnan(temperaturaBruta)) {
-    Serial.println(F("[SENSOR] Falha DS18B20 — modo seguro"));
-    entrarModoSeguroPorFalhaSensor();
-  } else {
-    aplicarFiltroTemperatura(temperaturaBruta);
+  if (!leituraSensorPlausivel(novaLeitura)) {
+    registrarFalhaLeituraSensor();
+    return;
   }
+
+  registrarLeituraSensorOk(novaLeitura);
 }
 
 /**
@@ -582,12 +699,8 @@ void tarefaLeituraSensor() {
 void tarefaMalhaPid(unsigned long instanteAtualMs) {
   if (!controleMalhaAtivo) {
     if (fabsf(saidaPidUltimoAplicado - PID_SAIDA_MIN) > 0.0001f
-        || potenciometro.passoAtualA() != POT_PASSOS_MAX
-#if POT_USA_DOIS_CHIPS
-        || potenciometro.passoAtualB() != POT_PASSOS_MAX
-#endif
-    ) {
-      aplicarPotenciometroStandby();
+        || dimmer.nivelAtual() != 0) {
+      aplicarDimmerStandby();
     }
 #if SERIAL_DEPURAR_MALHA
     imprimirSerialMalha();
@@ -595,8 +708,14 @@ void tarefaMalhaPid(unsigned long instanteAtualMs) {
     return;
   }
 
-  if (!sensorTemp.sensorOk() || isnan(temperaturaFiltrada)) {
-    entrarModoSeguroPorFalhaSensor();
+  if (sensorEmErroPersistente) {
+#if SERIAL_DEPURAR_MALHA
+    imprimirSerialMalha();
+#endif
+    return;
+  }
+
+  if (isnan(temperaturaFiltrada)) {
 #if SERIAL_DEPURAR_MALHA
     imprimirSerialMalha();
 #endif
@@ -605,8 +724,8 @@ void tarefaMalhaPid(unsigned long instanteAtualMs) {
 
   if (modoControle == MODO_CONTROLE_POTENCIA) {
     saidaPotenciaManual = alvoPotenciaEncoder / 100.0f;
-    if (deveAplicarSaidaPidNoPotenciometro(instanteAtualMs)) {
-      aplicarSaidaPotenciaManualNoPotenciometro();
+    if (deveAplicarSaidaNoDimmer(instanteAtualMs, saidaPotenciaManual)) {
+      aplicarSaidaPotenciaManualNoDimmer();
       display.invalidarCache();
     }
 #if SERIAL_DEPURAR_MALHA
@@ -618,8 +737,8 @@ void tarefaMalhaPid(unsigned long instanteAtualMs) {
   float tempoSegundos = instanteAtualMs / 1000.0f;
   atualizarSetpointMalhaSeEstavel();
   saidaPid = pid.passo(setpointMalha, temperaturaFiltrada, tempoSegundos);
-  if (deveAplicarSaidaPidNoPotenciometro(instanteAtualMs)) {
-    aplicarSaidaPidNoPotenciometro();
+  if (deveAplicarSaidaNoDimmer(instanteAtualMs, saidaPid)) {
+    aplicarSaidaPidNoDimmer();
     display.invalidarCache();
   }
 
@@ -635,12 +754,12 @@ void tarefaMalhaPid(unsigned long instanteAtualMs) {
 void tarefaAtualizarDisplay() {
   unsigned long agora = millis();
   float potCmd = potenciaComandoAtual();
-  medidorUso.atualizar(potCmd, controleMalhaAtivo, agora);
+  medidorUso.atualizar(potCmd, medidorDeveContar(), agora);
 
   display.atualizar(setpointEncoder, alvoPotenciaEncoder, temperaturaFiltrada,
-                    potCmd, potenciometro.passoAtualA(), potenciometro.passoAtualB(),
-                    obterEstadoParaDisplay(), modoControle, metaAtingida,
-                    controleMalhaAtivo, msgTransicao, setpointPendenteNaMalha,
+                    potCmd, obterEstadoParaDisplay(), modoControle, metaAtingida,
+                    controleMalhaAtivo, chuveiroEnergizadoNaRede(), msgTransicao,
+                    setpointPendenteNaMalha,
                     direcaoAjusteAlvoTemp, medidorUso.tempoSegundos(),
                     medidorUso.energiaWh());
 }
@@ -653,36 +772,23 @@ void setup() {
   Serial.begin(SERIAL_VELOCIDADE);
   delay(500);
   Serial.println(F("=== Inicio: controle chuveiro ESP32 ==="));
-  Serial.print(F("[MAP] Modo "));
-  Serial.print(potenciometroModoRedeNome());
-  if (reqParaleloEstaAtivo()) {
-    Serial.print(F(" | R_par "));
-    Serial.print(RESISTOR_PARALELO_KOHM, 0);
-    Serial.print(F(" kΩ"));
-  }
-  Serial.print(F(" | R_serie max "));
-  Serial.print(rpotSerieMaximaKohm(), 1);
-  Serial.print(F(" kΩ | ideal "));
-  Serial.print(REQ_IDEAL_POTENCIA_MIN_KOHM, 0);
-  Serial.print(F(" kΩ (0% ref) | min alcanç. ~ "));
-  Serial.print(potenciaMinimaAlcancavelPercentual(), 1);
-  Serial.println(F(" %"));
-#if POT_USA_DOIS_CHIPS
-  Serial.println(F("[MAP] 2 chips: SPI compartilhado, CS_A/CS_B separados"));
-#endif
-  Serial.println(F("[MAP] Escala potencia: Req linear"));
+  Serial.println(F("[DIM] rbdimmerESP32 + Arduino-ESP32 3.x (pioarduino)"));
+  Serial.print(F("[DIM] ZC="));
+  Serial.print(PINO_DIMMER_ZC);
+  Serial.print(F(" PSM="));
+  Serial.println(PINO_DIMMER_PSM);
 #if SERIAL_DEPURAR_MALHA
   Serial.print(F("[MALHA] PID "));
   Serial.print(PERIODO_PID_MS);
-  Serial.print(F("ms | pot "));
-  Serial.print(PERIODO_ATUADOR_POT_MS);
+  Serial.print(F("ms | dimmer "));
+  Serial.print(PERIODO_ATUADOR_DIMMER_MS);
   Serial.print(F("ms dOUT>"));
-#if POT_HISTERESIS_SAIDA_ATIVA
-  Serial.print(POT_HISTERESIS_SAIDA_LIMIAR, 3);
+#if DIMMER_HISTERESIS_SAIDA_ATIVA
+  Serial.print(DIMMER_HISTERESIS_SAIDA_LIMIAR, 3);
 #else
   Serial.print(F("passo"));
 #endif
-  Serial.println(F(" | escada A/B intercalada"));
+  Serial.println(F(" | corte de fase"));
 #endif
 
   // Inicialização na ordem: feedback visual → entradas → atuador → sensor → PID
@@ -701,19 +807,20 @@ void setup() {
   setpointPendenteNaMalha = false;
   direcaoAjusteAlvoTemp = 0;
 
-  potenciometro.iniciar();
+  dimmer.iniciar();
   medidorUso.iniciar();
+  sincronizarEstadoZeroCrossBuzzer();
 
   if (!MALHA_INICIA_ATIVA) {
     controleMalhaAtivo = false;
-    Serial.println(F("[POT] Calculando posicao standby..."));
-    potenciometro.definirSaidaNormalizadaRapida(PID_SAIDA_MIN);
-    registrarAplicacaoPot(PID_SAIDA_MIN);
-    Serial.println(F("[POT] Standby — potencia 0 % (inicializacao rapida)"));
+    Serial.println(F("[DIM] Posicao standby..."));
+    dimmer.definirSaidaNormalizadaRapida(PID_SAIDA_MIN);
+    registrarAplicacaoDimmer(PID_SAIDA_MIN);
+    Serial.println(F("[DIM] Standby — potencia 0 %"));
   } else {
-    potenciometro.reiniciarParaMinimo();
+    dimmer.definirPotenciaMaxima();
     medidorUso.reiniciar(millis());
-    Serial.println(F("[POT] Wipers no minimo (potencia maxima)"));
+    Serial.println(F("[DIM] Nivel maximo (potencia maxima)"));
   }
 
   for (int i = 0; i < FILTRO_TEMP_AMOSTRAS; i++) {
@@ -736,9 +843,10 @@ void setup() {
 
   buzzer.tocarConfirmacao();
   delay(800);  // único delay longo: tempo para o usuário ver o splash no LCD
-  display.atualizar(setpointEncoder, alvoPotenciaEncoder, NAN, 0.0f, 0, 0,
+  display.atualizar(setpointEncoder, alvoPotenciaEncoder, NAN, 0.0f,
                     obterEstadoParaDisplay(), modoControle, false,
-                    controleMalhaAtivo, msgTransicao, setpointPendenteNaMalha,
+                    controleMalhaAtivo, chuveiroEnergizadoNaRede(), msgTransicao,
+                    setpointPendenteNaMalha,
                     direcaoAjusteAlvoTemp, medidorUso.tempoSegundos(),
                     medidorUso.energiaWh());
 }

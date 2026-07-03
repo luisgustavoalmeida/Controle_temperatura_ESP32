@@ -50,6 +50,9 @@ public:
   bool sensorOk() const;
   bool jaObteveLeituraValida() const;
 
+  /** Reescaneia o barramento (recuperacao apos falhas transientes). */
+  void tentarReenumerar();
+
 private:
   bool _ok;
   bool _conversaoEmAndamento;

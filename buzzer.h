@@ -15,7 +15,9 @@ enum BuzzerPadrao {
   BUZZ_CLIQUE,           // 1 beep curto — rotação do encoder
   BUZZ_CONFIRMACAO,      // 2 beeps — botão do encoder
   BUZZ_META_ATINGIDA,    // 3 tons ascendentes — entrou na faixa do alvo
-  BUZZ_FORA_DA_META      // 3 tons descendentes — saiu da faixa do alvo
+  BUZZ_FORA_DA_META,     // 3 tons descendentes — saiu da faixa do alvo
+  BUZZ_REDE_PRESENTE,    // 1 tom agudo — zero-cross detectado (chuveiro ON)
+  BUZZ_REDE_AUSENTE      // 1 tom grave — zero-cross perdido (chuveiro OFF)
 };
 
 class Buzzer {
@@ -27,6 +29,8 @@ public:
   void tocarConfirmacao();
   void tocarMetaAtingida();
   void tocarForaDaMeta();
+  void tocarRedePresente();
+  void tocarRedeAusente();
 
 private:
   BuzzerPadrao _padraoAtual;

@@ -2,7 +2,7 @@
  * display_lcd.h — LCD 20×4 I2C (PCF8574)
  *
  * Layout:
- *   Linha 0 — tempo de uso + energia consumida
+ *   Linha 0 — MM:SS (00:00) + energia X.XXXkWh (meio) + "on" (cols 19-20 se ZC)
  *   Linha 1 — alvo (°C ou %)
  *   Linha 2 — temperatura medida
  *   Linha 3 — potência % + modo / estado
@@ -42,10 +42,15 @@ public:
 
   /** potenciaCmd01 = OUT 0..1 (PID ou potência manual) exibido como % na linha 3 */
   void atualizar(float setpointC, float alvoPotenciaPct, float atualC, float potenciaCmd01,
-                 uint8_t passoPotA, uint8_t passoPotB, EstadoSistema estado,
+                 EstadoSistema estado,
                  ModoControle modoControle, bool metaAtingida, bool controleAtivo,
-                 MensagemTransicao msgTransicao, bool setpointPendenteNaMalha,
+                 bool chuveiroEnergizado, MensagemTransicao msgTransicao,
+                 bool setpointPendenteNaMalha,
                  int8_t direcaoAjusteAlvoTemp, uint32_t tempoUsoSeg, float energiaWh);
+
+  /** Pisca backlight — rede/chuveiro presente (zero-cross). */
+  void piscarRedePresente();
+  void piscarRedeAusente();
 
   void invalidarCache();
 
@@ -65,7 +70,9 @@ private:
   enum PadraoPiscarIluminacao {
     PISCAR_NENHUM,
     PISCAR_META_ATINGIDA,
-    PISCAR_FORA_DA_META
+    PISCAR_FORA_DA_META,
+    PISCAR_REDE_PRESENTE,
+    PISCAR_REDE_AUSENTE
   };
 
   bool _iluminacaoLigada;
@@ -87,12 +94,11 @@ private:
   float _ultimoAlvoPotencia;
   float _ultimoAtual;
   float _ultimaPotCmd;
-  uint8_t _ultimoPassoPotA;
-  uint8_t _ultimoPassoPotB;
   EstadoSistema _ultimoEstado;
   ModoControle _ultimoModoControle;
   bool _ultimaMeta;
   bool _ultimoControleAtivo;
+  bool _ultimoChuveiroEnergizado;
   MensagemTransicao _ultimaMsgTransicao;
   uint8_t _ultimoFrameAnimPid;
   bool _ultimoSetpointPendente;
@@ -104,7 +110,8 @@ private:
   static void montarLinhaBuscandoTemp(char* buffer, size_t tam, float percentual,
                                       uint8_t frameAnim);
   static void montarLinhaUsoEnergia(char* buffer, size_t tam, uint32_t tempoSeg,
-                                    float energiaWh, bool controleAtivo);
+                                    float energiaWh, bool controleAtivo,
+                                    bool chuveiroEnergizado);
 };
 
 #endif // DISPLAY_LCD_H

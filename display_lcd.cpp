@@ -28,8 +28,6 @@ void DisplayLCD::invalidarCache() {
   _ultimoAlvoPotencia = -999.0f;
   _ultimoAtual = -999.0f;
   _ultimaPotCmd = -1.0f;
-  _ultimoPassoPotA = 0xFF;
-  _ultimoPassoPotB = 0xFF;
   _ultimoEstado = ESTADO_INICIALIZANDO;
   _ultimaMsgTransicao = MSG_NENHUMA;
   _ultimoFrameAnimPid = 255;
@@ -37,35 +35,32 @@ void DisplayLCD::invalidarCache() {
   _ultimaDirecaoAjusteAlvo = 0;
   _ultimoTempoUsoSeg = 0xFFFFFFFFUL;
   _ultimaEnergiaWh = -1.0f;
+  _ultimoChuveiroEnergizado = false;
 }
 
 void DisplayLCD::montarLinhaUsoEnergia(char* buffer, size_t tam, uint32_t tempoSeg,
-                                       float energiaWh, bool controleAtivo) {
+                                       float energiaWh, bool controleAtivo,
+                                       bool chuveiroEnergizado) {
+  (void)controleAtivo;
+
   if (tempoSeg > 359999UL) {
     tempoSeg = 359999UL;
   }
-  uint32_t horas = tempoSeg / 3600UL;
-  uint32_t minutos = (tempoSeg % 3600UL) / 60UL;
-  uint32_t segundos = tempoSeg % 60UL;
+
+  uint32_t totalMinutos = tempoSeg / 60UL;
+  uint32_t segRest = tempoSeg % 60UL;
+
+  char tempo[12];
+  snprintf(tempo, sizeof(tempo), "%02lu:%02lu",
+           (unsigned long)totalMinutos, (unsigned long)segRest);
 
   char energia[12];
-  if (energiaWh < 1000.0f) {
-    snprintf(energia, sizeof(energia), "%4.0f Wh", energiaWh);
-  } else {
-    snprintf(energia, sizeof(energia), "%5.3fkWh", energiaWh / 1000.0f);
-  }
+  snprintf(energia, sizeof(energia), "%.3fkWh", energiaWh / 1000.0f);
 
-  if (controleAtivo) {
-    snprintf(buffer, tam, "%02lu:%02lu:%02lu %s",
-             (unsigned long)horas, (unsigned long)minutos, (unsigned long)segundos,
-             energia);
-  } else if (tempoSeg > 0 || energiaWh >= 0.5f) {
-    snprintf(buffer, tam, "%02lu:%02lu:%02lu %s",
-             (unsigned long)horas, (unsigned long)minutos, (unsigned long)segundos,
-             energia);
-  } else {
-    snprintf(buffer, tam, "00:00:00    0 Wh");
-  }
+  const char* ligado = chuveiroEnergizado ? "on" : "  ";
+
+  // 8 + 8 + 2 espacos + 2 = 20 colunas (posicoes estaveis com/sem zero-cross)
+  snprintf(buffer, tam, "%-8s%-8s  %-2s", tempo, energia, ligado);
 }
 
 void DisplayLCD::montarLinhaBuscandoTemp(char* buffer, size_t tam, float percentual,
@@ -88,6 +83,8 @@ uint8_t DisplayLCD::quantidadePiscadas(PadraoPiscarIluminacao padrao) {
   switch (padrao) {
     case PISCAR_META_ATINGIDA:
     case PISCAR_FORA_DA_META:
+    case PISCAR_REDE_PRESENTE:
+    case PISCAR_REDE_AUSENTE:
       return 3;
     default:
       return 0;
@@ -96,9 +93,10 @@ uint8_t DisplayLCD::quantidadePiscadas(PadraoPiscarIluminacao padrao) {
 
 uint16_t DisplayLCD::duracaoFasePiscarMs(uint8_t fase, PadraoPiscarIluminacao padrao) {
   if (fase % 2 == 0) {
-    return (padrao == PISCAR_FORA_DA_META)
-               ? LCD_PISCAR_FORA_META_LIGADO_MS
-               : LCD_PISCAR_META_LIGADO_MS;
+    if (padrao == PISCAR_FORA_DA_META || padrao == PISCAR_REDE_AUSENTE) {
+      return LCD_PISCAR_FORA_META_LIGADO_MS;
+    }
+    return LCD_PISCAR_META_LIGADO_MS;
   }
   return LCD_PISCAR_META_PAUSA_MS;
 }
@@ -131,6 +129,14 @@ void DisplayLCD::piscarMetaAtingida() {
 
 void DisplayLCD::piscarForaDaMeta() {
   iniciarPiscar(PISCAR_FORA_DA_META);
+}
+
+void DisplayLCD::piscarRedePresente() {
+  iniciarPiscar(PISCAR_REDE_PRESENTE);
+}
+
+void DisplayLCD::piscarRedeAusente() {
+  iniciarPiscar(PISCAR_REDE_AUSENTE);
 }
 
 void DisplayLCD::notificarAtividadeEncoder() {
@@ -206,15 +212,16 @@ bool DisplayLCD::iniciar() {
 void DisplayLCD::splashInicializacao() {
   lcd.clear();
   escreverLinha(0, "Controle Temperatura");
-  escreverLinha(1, "ESP32 + PID");
+  escreverLinha(1, "ESP32 + Dimmer");
   escreverLinha(2, "Inicializando...");
   escreverLinha(3, "I2C 0x27 OK");
 }
 
 void DisplayLCD::atualizar(float setpointC, float alvoPotenciaPct, float atualC,
-                           float potenciaCmd01, uint8_t passoPotA, uint8_t passoPotB,
-                           EstadoSistema estado, ModoControle modoControle, bool metaAtingida,
-                           bool controleAtivo, MensagemTransicao msgTransicao,
+                           float potenciaCmd01, EstadoSistema estado, ModoControle modoControle,
+                           bool metaAtingida,
+                           bool controleAtivo, bool chuveiroEnergizado,
+                           MensagemTransicao msgTransicao,
                            bool setpointPendenteNaMalha, int8_t direcaoAjusteAlvoTemp,
                            uint32_t tempoUsoSeg, float energiaWh) {
   if (!_ok) {
@@ -240,9 +247,9 @@ void DisplayLCD::atualizar(float setpointC, float alvoPotenciaPct, float atualC,
       (fabsf(alvoPotenciaPct - _ultimoAlvoPotencia) > 0.01f) ||
       (fabsf(atualC - _ultimoAtual) > 0.01f) ||
       (fabsf(potenciaCmd01 - _ultimaPotCmd) > 0.001f) ||
-      (passoPotA != _ultimoPassoPotA) || (passoPotB != _ultimoPassoPotB) ||
       (estado != _ultimoEstado) || (modoControle != _ultimoModoControle) ||
       (metaAtingida != _ultimaMeta) || (controleAtivo != _ultimoControleAtivo) ||
+      (chuveiroEnergizado != _ultimoChuveiroEnergizado) ||
       (msgTransicao != _ultimaMsgTransicao) ||
       (setpointPendenteNaMalha != _ultimoSetpointPendente) ||
       (direcaoAjusteAlvoTemp != _ultimaDirecaoAjusteAlvo) ||
@@ -256,12 +263,11 @@ void DisplayLCD::atualizar(float setpointC, float alvoPotenciaPct, float atualC,
   _ultimoAlvoPotencia = alvoPotenciaPct;
   _ultimoAtual = atualC;
   _ultimaPotCmd = potenciaCmd01;
-  _ultimoPassoPotA = passoPotA;
-  _ultimoPassoPotB = passoPotB;
   _ultimoEstado = estado;
   _ultimoModoControle = modoControle;
   _ultimaMeta = metaAtingida;
   _ultimoControleAtivo = controleAtivo;
+  _ultimoChuveiroEnergizado = chuveiroEnergizado;
   _ultimaMsgTransicao = msgTransicao;
   _ultimoFrameAnimPid = frameAnimPid;
   _ultimoSetpointPendente = setpointPendenteNaMalha;
@@ -271,7 +277,8 @@ void DisplayLCD::atualizar(float setpointC, float alvoPotenciaPct, float atualC,
 
   char buffer[21];
 
-  montarLinhaUsoEnergia(buffer, sizeof(buffer), tempoUsoSeg, energiaWh, controleAtivo);
+  montarLinhaUsoEnergia(buffer, sizeof(buffer), tempoUsoSeg, energiaWh, controleAtivo,
+                        chuveiroEnergizado);
   escreverLinha(0, buffer);
 
   if (modoPotencia) {

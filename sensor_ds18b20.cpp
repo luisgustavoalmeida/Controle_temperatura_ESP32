@@ -80,7 +80,6 @@ float SensorDS18B20::lerValorConvertido() {
 
   if (temperatura == DEVICE_DISCONNECTED_C || temperatura < -55.0f ||
       temperatura > 125.0f) {
-    _ok = false;
     return NAN;
   }
   return temperatura;
@@ -106,7 +105,7 @@ bool SensorDS18B20::atualizar(float* temperaturaC) {
 
   if (!_ok) {
     *temperaturaC = NAN;
-    return false;
+    return true;
   }
 
   // Conversão anterior terminou → ler agora e já pedir a próxima
@@ -114,7 +113,8 @@ bool SensorDS18B20::atualizar(float* temperaturaC) {
     *temperaturaC = lerGrausCSePronto();
 
     if (isnan(*temperaturaC)) {
-      return true;  // leitura falhou, mas o ciclo "terminou"
+      iniciarConversao();
+      return true;
     }
 
     iniciarConversao();
@@ -127,6 +127,21 @@ bool SensorDS18B20::atualizar(float* temperaturaC) {
   }
 
   return false;
+}
+
+void SensorDS18B20::tentarReenumerar() {
+  sensores.begin();
+  sensores.setResolution(_resolucaoBits);
+  sensores.setWaitForConversion(false);
+  sensores.setCheckForConversion(_checarConversaoNoBarramento);
+
+  bool encontrado = (sensores.getDeviceCount() > 0);
+  if (encontrado) {
+    _ok = true;
+    if (!_conversaoEmAndamento) {
+      iniciarConversao();
+    }
+  }
 }
 
 bool SensorDS18B20::sensorOk() const {

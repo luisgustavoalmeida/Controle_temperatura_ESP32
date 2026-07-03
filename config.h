@@ -2,11 +2,10 @@
  * config.h — Constantes globais do firmware
  *
  * Controle de temperatura do chuveiro elétrico via ESP32 (NodeMCU-32S).
- * A malha PID ajusta a potência (0..100 %) com 1 ou 2× TPL0501 em série.
+ * A malha PID ajusta a potência (0..100 %) via RobotDyn AC Light Dimmer (TRIAC).
  *
  * Onde alterar no dia a dia:
- *   • MODO_POT_REDE, RESISTOR_PARALELO_KOHM — topologia elétrica
- *   • POT_AFERIDO_KOHM_MAX_A/B, REQ_IDEAL_POTENCIA_MIN_KOHM — após teste_tpl0501
+ *   • PINO_DIMMER_ZC / PINO_DIMMER_PSM — fiação do módulo dimmer
  *   • PID_GANHO_* — ajuste fino da malha
  *   • MALHA_INICIA_ATIVA, SERIAL_DEPURAR_MALHA — comportamento no boot
  *
@@ -24,14 +23,10 @@
 /** DQ do DS18B20 — pull-up 4,7 kΩ entre este pino e 3,3 V (obrigatório). */
 #define PINO_SENSOR_TEMP       4
 
-/** Chip select do TPL0501 A (ativo em LOW). */
-#define PINO_POT_CS_A          5
-/** Chip select do TPL0501 B — só usado quando POT_USA_DOIS_CHIPS = 1. */
-#define PINO_POT_CS_B          18
-/** Clock SPI compartilhado entre os dois TPL0501. */
-#define PINO_POT_SCLK          16
-/** Dados SPI (MOSI) compartilhados entre os dois TPL0501. */
-#define PINO_POT_MOSI          23
+/** RobotDyn — disparo TRIAC (PSM / DIMMER). */
+#define PINO_DIMMER_PSM        18
+/** RobotDyn — detecção zero-cross (ZC / ZERO-C). */
+#define PINO_DIMMER_ZC         5
 
 /** Barramento I2C do módulo LCD (PCF8574). */
 #define PINO_I2C_SDA           21
@@ -79,11 +74,11 @@
 // ===========================================================================
 
 /** Ganho proporcional — reação à diferença SP − PV (°C). */
-#define PID_GANHO_KP           0.048f
+#define PID_GANHO_KP           0.03f
 /** Ganho integral — corrige erro persistente (cuidado com overshoot). */
-#define PID_GANHO_KI           0.0024f
+#define PID_GANHO_KI           0.001f
 /** Ganho derivativo — amortecimento ante mudanças rápidas de PV. */
-#define PID_GANHO_KD           0.298f
+#define PID_GANHO_KD           0.27f
 
 /** Limites da saída do PID: 0 = potência mínima, 1 = potência máxima. */
 #define PID_SAIDA_MIN          0.0f
@@ -131,7 +126,7 @@
 
 /**
  * Faixa em torno do alvo para aviso sonoro, piscar do backlight e texto “Temp OK” [°C].
- * NÃO pausa o PID nem o potenciômetro — só buzzer e display.
+ * NÃO pausa o PID nem o dimmer — só buzzer e display.
  */
 #define BUZZER_HISTERESE_C     0.2f
 
@@ -143,7 +138,7 @@
 
 // ===========================================================================
 // 3b. Modo potência manual (encoder ajusta saída direta, sem PID)
-//     100 % = Req mínima (~0 Ω) | 0 % = REQ_IDEAL_POTENCIA_MIN_KOHM (150 kΩ)
+//     100 % = potência máxima no dimmer | 0 % = mínima / off
 // ===========================================================================
 
 /** Faixa do alvo de potência no encoder [%]. */
@@ -158,152 +153,190 @@
 #define ALVO_POT_PASSO_FINO_PCT 0.1f
 
 // ===========================================================================
-// 4. TPL0501 — potenciômetro digital e rede do chuveiro
+// 4. RobotDyn AC Light Dimmer (rbdimmerESP32 — requer Arduino-ESP32 3.x)
 // ===========================================================================
 
-/** Resistência nominal do TPL0501-100 conforme datasheet [Ω]. */
-#define POT_RESISTENCIA_NOMINAL_OHM  100000
-
-/** Último passo válido do wiper (256 posições: 0..255). */
-#define POT_PASSOS_MAX               255
-
-/** Frequência SPI — máximo 250 kHz na folha de dados do TPL0501 [Hz]. */
-#define POT_SPI_FREQUENCIA_HZ        250000
-
-// --- Modo de ligação elétrica (escolha UMA opção em MODO_POT_REDE) ---------
-//   MODO_POT_UNICO                 — 1× TPL0501
-//   MODO_POT_UNICO_PARALELO        — 1× + resistor fixo em paralelo
-//   MODO_POT_DUPLO_SERIE           — 2× em série (escada intercalada A↔B)
-//   MODO_POT_DUPLO_SERIE_PARALELO  — 2× em série + resistor em paralelo
-#define MODO_POT_UNICO                    0
-#define MODO_POT_UNICO_PARALELO           1
-#define MODO_POT_DUPLO_SERIE              2
-#define MODO_POT_DUPLO_SERIE_PARALELO     3
+/** Limite fixo da rbdimmerESP32: niveis 1..2 nao disparam o TRIAC (delay = 0). */
+#define DIMMER_BIBLIOTECA_NIVEL_MIN    3
 
 /**
- * Modo ativo da rede de saída.
- * Testes PlatformIO podem definir MODO_POT_REDE_SOBRESCREVER via build_flags.
+ * Minimo quando OUT > 0 [%]. 0 = sempre OFF (standby).
+ * Se DIMMER_NIVEL_MIN < 3, o firmware usa 3 (limite da biblioteca).
  */
-#ifdef MODO_POT_REDE_SOBRESCREVER
-#define MODO_POT_REDE                     MODO_POT_REDE_SOBRESCREVER
-#else
-#define MODO_POT_REDE                     MODO_POT_DUPLO_SERIE_PARALELO
-#endif
+#define DIMMER_NIVEL_MIN               0
+#define DIMMER_NIVEL_MAX               98
 
-/** Derivado: 1 se há resistor fixo em paralelo com a saída (não editar). */
-#if (MODO_POT_REDE == MODO_POT_UNICO_PARALELO) \
- || (MODO_POT_REDE == MODO_POT_DUPLO_SERIE_PARALELO)
-#define REDE_COM_RESISTOR_PARALELO        1
+#if DIMMER_NIVEL_MIN < DIMMER_BIBLIOTECA_NIVEL_MIN
+#define DIMMER_NIVEL_MIN_EFETIVO       DIMMER_BIBLIOTECA_NIVEL_MIN
 #else
-#define REDE_COM_RESISTOR_PARALELO        0
-#endif
-
-/** Derivado: 1 se dois TPL0501 em série (não editar). */
-#if (MODO_POT_REDE == MODO_POT_DUPLO_SERIE) \
- || (MODO_POT_REDE == MODO_POT_DUPLO_SERIE_PARALELO)
-#define POT_USA_DOIS_CHIPS                1
-#else
-#define POT_USA_DOIS_CHIPS                0
+#define DIMMER_NIVEL_MIN_EFETIVO       DIMMER_NIVEL_MIN
 #endif
 
 /**
- * Resistor fixo em paralelo com a saída do chuveiro [kΩ].
- * Medir com multímetro (circuito desenergizado). Usado em modos *_PARALELO.
+ * Fase da rede (0 = monofásico). Frequência [Hz]: 60 = Brasil (padrão);
+ * 50 para rede europeia; 0 = detecção automática (mais lento no boot).
  */
-#define RESISTOR_PARALELO_KOHM            730.0f
+#define DIMMER_FASE_REDE               0
+#define DIMMER_FREQUENCIA_REDE_HZ      60
 
 /**
- * Referência de 0 % de potência na escala do PID:
- *   REF_POTENCIA_MIN_IDEAL  — Req medida no multímetro (ex.: 150 kΩ)
- *   REF_POTENCIA_MIN_FISICA — máximo que o hardware alcança (passos 255/255)
+ * Modo de curva do dimmer (rbdimmerESP32) — como o nível 0..100 % vira ângulo de disparo.
+ *
+ * Escolha UMA linha ativa (comente as outras):
+ *
+ *   DIMMER_CURVA_LINEAR      — atraso proporcional ao nível; tensão sobe rápido no início.
+ *   DIMMER_CURVA_RMS         — compensa corte de fase p/ carga resistiva (chuveiro/lâmpada).
+ *   DIMMER_CURVA_LOGARITMICA — curva log; pensada p/ LED; útil p/ comparar na bancada.
+ *
+ * PlatformIO (sem editar config.h):
+ *   pio run -e esp32dev_curva_linear -t upload
+ *   pio run -e esp32dev_curva_rms     -t upload   (padrão = esp32dev)
+ *   pio run -e esp32dev_curva_log     -t upload
+ *
+ * Nota: níveis 1..2 % são sempre OFF na biblioteca (mínimo útil ≈ 3 %).
  */
-#define REF_POTENCIA_MIN_IDEAL            0
-#define REF_POTENCIA_MIN_FISICA           1
-#define REF_POTENCIA_MINIMA               REF_POTENCIA_MIN_FISICA
+#define DIMMER_CURVA_LINEAR            0
+#define DIMMER_CURVA_RMS               1
+#define DIMMER_CURVA_LOGARITMICA       2
 
 /**
- * Limite opcional de Req na saída [kΩ]. 0 = sem teto extra.
- * Se > 0, capa a potência mínima que o PID pode pedir.
+ * Curva ativa (0=LINEAR, 1=RMS, 2=LOG).
+ * ATENCAO: ambientes PlatformIO esp32dev_curva_* passam -D DIMMER_CURVA_TIPO=N
+ * e IGNORAM esta linha. Confira no boot serial: curva_cfg= e curva_lib=.
  */
-#define REQ_MAXIMA_SAIDA_KOHM             0.0f
+#ifndef DIMMER_CURVA_TIPO
+#define DIMMER_CURVA_TIPO              DIMMER_CURVA_LINEAR
+#endif
+// Alternativas (descomente #undef + UMA linha; nao use com -e esp32dev_curva_*):
+// #undef DIMMER_CURVA_TIPO
+// #define DIMMER_CURVA_TIPO           DIMMER_CURVA_RMS
+// #define DIMMER_CURVA_TIPO           DIMMER_CURVA_LOGARITMICA
+
+#if (DIMMER_CURVA_TIPO != DIMMER_CURVA_LINEAR) && \
+    (DIMMER_CURVA_TIPO != DIMMER_CURVA_RMS) && \
+    (DIMMER_CURVA_TIPO != DIMMER_CURVA_LOGARITMICA)
+#error DIMMER_CURVA_TIPO invalido: use DIMMER_CURVA_LINEAR, RMS ou LOGARITMICA
+#endif
+
+#if DIMMER_CURVA_TIPO == DIMMER_CURVA_RMS
+#define DIMMER_CURVA_NOME              "RMS"
+#elif DIMMER_CURVA_TIPO == DIMMER_CURVA_LOGARITMICA
+#define DIMMER_CURVA_NOME              "LOG"
+#else
+#define DIMMER_CURVA_NOME              "LINEAR"
+#endif
 
 /**
- * Modo duplo: níveis da escada intercalada chip A ↔ chip B (0..510).
- * Derivado de POT_PASSOS_MAX — não editar.
+ * Nivel maximo enviado ao rbdimmer quando o comando pede 100 % (nao use 100).
+ * Mesmo teto para LINEAR, RMS e LOG — ajuste conforme bancada (96 = ~4 % atraso).
+ *
+ * Motivo: nivel 100 na LINEAR da biblioteca gera atraso 0 us (TRIAC nao dispara);
+ * niveis 99-100 ficam no limite minimo do timer e podem piscar.
  */
-#define POT_PASSOS_INTERCALADOS_MAX       (2 * POT_PASSOS_MAX)
+#define DIMMER_NIVEL_PLENO_ESTAVEL     100
 
 /**
- * Serial debug: imprime dPOT se |potência física − OUT| > este limiar (0..1).
- * Usado em imprimirSerialMalha() quando SERIAL_DEPURAR_MALHA = true.
+ * Serial debug: imprime dDIM se |nível dimmer − OUT| > este limiar (0..1).
  */
-#define SERIAL_TOLERANCIA_ERRO_POT        0.005f
-
-// --- Aferição hardware (preencher com teste_tpl0501, comando l) ------------
+#define SERIAL_TOLERANCIA_ERRO_DIM       0.005f
 
 /**
- * Resistência VL–VW medida no passo 255 de cada chip [kΩ].
- * Estimativa inicial do datasheet; recalibrar no hardware.
+ * Histerese opcional: só atualiza o dimmer se |OUT − OUT_anterior| > limiar.
+ * 0 = aplica sempre que OUT mudar.
  */
-#define POT_AFERIDO_KOHM_MAX_A             96.5f
-#define POT_AFERIDO_KOHM_MAX_B             95.3f
+#define DIMMER_HISTERESIS_SAIDA_ATIVA    0
+#define DIMMER_HISTERESIS_SAIDA_LIMIAR   0.0f
+
+// ---------------------------------------------------------------------------
+// Calibracao: potencia linear (PID e modo potencia manual)
+// ---------------------------------------------------------------------------
 
 /**
- * Req na saída da rede para 0 % de potência no multímetro [kΩ].
- * Comando ae no teste_tpl0501 (A=B=255). Não confundir com R_série interna.
+ * 1 = OUT/alvo 0..100 %% significa potencia real linear (via tabela de bancada).
+ * 0 = OUT 0..1 mapeia direto em nivel 0..DIMMER_NIVEL_MAX (sem tabela).
  */
-#define REQ_IDEAL_POTENCIA_MIN_KOHM       150.0f
+#define DIMMER_USA_CALIBRACAO_POTENCIA_LINEAR  0
 
-/** Incremento estimado de R por passo de cada chip [kΩ] — derivado (não editar). */
-#define POT_KOHM_POR_PASSO_A  (POT_AFERIDO_KOHM_MAX_A / (float)POT_PASSOS_MAX)
-#define POT_KOHM_POR_PASSO_B  (POT_AFERIDO_KOHM_MAX_B / (float)POT_PASSOS_MAX)
-
-/**
- * 1 = inverte o mapeamento lógico passo 0↔255 (use se a potência variar ao contrário).
- */
-#define POT_INVERTE_SENTIDO               0
+/** Potencia maxima medida na bancada com comando 100 %% [W] — referencia da tabela. */
+#define DIMMER_CAL_POT_REFERENCIA_W            135.108f
 
 /**
- * Histerese opcional: só move o potenciômetro se |OUT − OUT_anterior| > limiar.
- * 0 = aplica sempre que OUT mudar (comportamento atual da malha).
+ * Tabela medida com DIMMER_CURVA_LINEAR, DIMMER_NIVEL_MAX e carga da bancada.
+ * COMANDO [%]: percentual no encoder / saida antes da calibracao inversa.
+ * POTENCIA [%]: potencia medida em %% de DIMMER_CAL_POT_REFERENCIA_W.
+ * Mantenha pontos em ordem crescente de COMANDO; edite apos novos testes.
  */
-#define POT_HISTERESIS_SAIDA_ATIVA        0
-#define POT_HISTERESIS_SAIDA_LIMIAR       0.0f
+#define DIMMER_CAL_POT_NUM_PONTOS              21
+
+#define DIMMER_CAL_COMANDO_PCT_TABLE \
+    0.0f,   5.0f,  10.0f,  15.0f,  20.0f,  25.0f,  30.0f,  35.0f,  40.0f,  45.0f, \
+   50.0f,  55.0f,  60.0f,  65.0f,  70.0f,  75.0f,  80.0f,  85.0f,  90.0f,  95.0f, 100.0f
+
+#define DIMMER_CAL_POTENCIA_PCT_TABLE \
+    0.0f,   0.113f,   0.542f,   1.40f,   3.13f,   6.00f,  10.36f,  16.47f, \
+   22.53f,  30.39f,  38.25f,  47.29f,  56.03f,  63.56f,  72.71f,  80.76f, \
+   88.20f,  93.16f,  95.60f,  98.84f, 100.0f
 
 // ===========================================================================
 // 5. Sensor DS18B20 (temperatura da água)
 // ===========================================================================
 
 /**
- * Resolução da conversão A/D: 9, 10, 11 ou 12 bits.
- * 12 bits ≈ 750 ms — PERIODO_SENSOR_MS deve ser >= SENSOR_TEMPO_CONVERSAO_MS.
+ * Resolucao A/D do DS18B20 — escolha UMA linha (9, 10, 11 ou 12 bits).
+ * Tempo de conversao e PERIODO_SENSOR_MS sao derivados automaticamente.
+ *
+ * | Bits | SENSOR_TEMPO_CONVERSAO_MS | Precisao tipica |
+ * |------|---------------------------|-----------------|
+ * |  9   |  94                       | +-0,5 C         |
+ * | 10   | 188                       | +-0,25 C        |
+ * | 11   | 375                       | +-0,125 C       |
+ * | 12   | 750                       | +-0,0625 C      |
  */
-#define SENSOR_RESOLUCAO_BITS      12
+#define SENSOR_RESOLUCAO_BITS      11
 
-/** Tempo mínimo de conversão @ 12 bits conforme folha de dados [ms]. */
-#define SENSOR_TEMPO_CONVERSAO_MS  750
+#if SENSOR_RESOLUCAO_BITS == 9
+#define SENSOR_TEMPO_CONVERSAO_MS  100
+#elif SENSOR_RESOLUCAO_BITS == 10
+#define SENSOR_TEMPO_CONVERSAO_MS  200
+#elif SENSOR_RESOLUCAO_BITS == 11
+#define SENSOR_TEMPO_CONVERSAO_MS  380
+#elif SENSOR_RESOLUCAO_BITS == 12
+#define SENSOR_TEMPO_CONVERSAO_MS  760
+#else
+#error SENSOR_RESOLUCAO_BITS invalido: use 9, 10, 11 ou 12
+#endif
 
 /**
  * Amostras na média móvel da temperatura antes do PID (Controle_temperatura_ESP32.ino).
  * 3 = suaviza ruído do DS18B20; aumente se o display/PID oscilar.
  */
-#define FILTRO_TEMP_AMOSTRAS       3
+#define FILTRO_TEMP_AMOSTRAS       1
+
+/**
+ * Robustez da leitura DS18B20 (Controle_temperatura_ESP32.ino).
+ * Falhas isoladas sao ignoradas; modo seguro e LCD so apos N falhas seguidas.
+ */
+#define SENSOR_FALHAS_ANTES_ERRO     4
+#define SENSOR_SUCESSOS_RECUPERACAO  2
+#define SENSOR_LEITURA_MIN_C         5.0f
+#define SENSOR_LEITURA_MAX_C         70.0f
+/** Salto maximo entre leituras consecutivas [C] — rejeita picos no barramento. */
+#define SENSOR_SALTO_MAXIMO_C        6.0f
+/** A cada N falhas, reescaneia o barramento 1-Wire (cabos soltos). */
+#define SENSOR_REENUM_INTERVALO      5
 
 // ===========================================================================
 // 6. Períodos do loop principal [ms] e Serial
 // ===========================================================================
 
-/** Intervalo do cálculo PID e atualização do comando ao TPL0501 [ms]. */
+/** Intervalo do cálculo PID e atualização do comando ao dimmer [ms]. */
 #define PERIODO_PID_MS             100
 
-/** Igual ao PID — sem atraso extra entre OUT e movimento do potenciômetro. */
-#define PERIODO_ATUADOR_POT_MS     PERIODO_PID_MS
+/** Igual ao PID — sem atraso extra entre OUT e atualização do dimmer. */
+#define PERIODO_ATUADOR_DIMMER_MS  PERIODO_PID_MS
 
-/** Intervalo entre leituras do DS18B20 — nunca menor que a conversão [ms]. */
-#define PERIODO_SENSOR_MS          750
-#if PERIODO_SENSOR_MS < SENSOR_TEMPO_CONVERSAO_MS
-#warning PERIODO_SENSOR_MS menor que SENSOR_TEMPO_CONVERSAO_MS - leitura invalida
-#endif
+/** Intervalo entre tentativas de leitura do DS18B20 (= tempo de conversao) [ms]. */
+#define PERIODO_SENSOR_MS          SENSOR_TEMPO_CONVERSAO_MS
 
 /** Atualização do LCD (temperatura, % potência, estados) [ms]. */
 #define PERIODO_LCD_MS             100
@@ -323,6 +356,12 @@
 /** Potência elétrica equivalente a 100 % de saída do chuveiro [W]. */
 #define POTENCIA_MAX_WATTS            6000.0f
 
+/**
+ * Sem pulso de zero-cross por este tempo → rede/chuveiro considerados desligados
+ * para o cronômetro e a energia (60 Hz ≈ 16,7 ms/ciclo; margem ~5 ciclos).
+ */
+#define MEDIDOR_ZC_TIMEOUT_MS         80
+
 /** Piscar backlight ao entrar/sair da meta (espelha duração do buzzer) [ms]. */
 #define LCD_PISCAR_META_LIGADO_MS     120
 #define LCD_PISCAR_FORA_META_LIGADO_MS 140
@@ -334,6 +373,14 @@
 /** Clique do encoder — pulso curto em micros (mais seco que millis). */
 #define BUZZ_CLIQUE_HZ               3000
 #define BUZZ_CLIQUE_US               2000UL
+
+/** Zero-cross: tom ao detectar chuveiro ligado (rede presente). */
+#define BUZZ_ZC_LIGADO_HZ            2200
+#define BUZZ_ZC_LIGADO_MS            150
+
+/** Zero-cross: tom ao detectar chuveiro desligado (rede ausente). */
+#define BUZZ_ZC_DESLIGADO_HZ         900
+#define BUZZ_ZC_DESLIGADO_MS         200
 
 /** Velocidade do Monitor Serial [baud]. */
 #define SERIAL_VELOCIDADE          115200

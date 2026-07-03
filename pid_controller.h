@@ -2,7 +2,7 @@
  * pid_controller.h — Controlador PID para temperatura
  *
  * Entrada: setpoint e temperatura medida [°C]
- * Saída: 0..1 → Req equivalente linear (potenciometro_map, ver config.h)
+ * Saída: 0..1 → potência 0..100 % no dimmer (ver config.h)
  *
  * Portado de: Malha_PID_temperatura/src/pid_controller.py
  * Inclui limite na integral e anti-windup por back-calculation.
@@ -29,6 +29,13 @@ public:
    */
   float passo(float valorDesejado, float valorMedido, float tempoAtualS);
 
+  /**
+   * Ajusta a integral para manter a saida atual apos mudanca de setpoint
+   * (transferencia sem choque / anti-derivative-kick no I).
+   */
+  void sincronizarIntegralParaSaida(float saida, float valorDesejado,
+                                    float valorMedido);
+
   float ultimoErro() const { return _ultimoErro; }
   float ultimoTermoP() const { return _ultimoTermoP; }
   float ultimoTermoI() const { return _ultimoTermoI; }
@@ -42,6 +49,7 @@ private:
   float _integral;
   float _integralMax;   // teto da integral (anti-windup)
   float _ultimoErro;
+  float _ultimoValorMedido;
   float _ultimoTermoP;
   float _ultimoTermoI;
   float _ultimoTermoD;

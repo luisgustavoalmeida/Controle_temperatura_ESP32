@@ -2,7 +2,8 @@
  * medidor_uso.h — Cronômetro de uso e energia integrada
  *
  * Integra P(t) com 100 % = POTENCIA_MAX_WATTS (config.h).
- * Reinicia ao ligar o controle; mantém valores exibidos ao desligar.
+ * Contagem só quando contagemAtiva=true (malha ligada + zero-cross recente).
+ * Reinicia ao ligar o controle; mantém valores exibidos ao pausar.
  */
 
 #ifndef MEDIDOR_USO_H

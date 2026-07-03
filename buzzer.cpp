@@ -63,11 +63,21 @@ void Buzzer::tocarForaDaMeta() {
   iniciarPadrao(BUZZ_FORA_DA_META);
 }
 
+void Buzzer::tocarRedePresente() {
+  iniciarPadrao(BUZZ_REDE_PRESENTE);
+}
+
+void Buzzer::tocarRedeAusente() {
+  iniciarPadrao(BUZZ_REDE_AUSENTE);
+}
+
 uint8_t Buzzer::quantidadeNotas(BuzzerPadrao padrao) {
   switch (padrao) {
     case BUZZ_CONFIRMACAO: return 2;
     case BUZZ_META_ATINGIDA: return 3;
     case BUZZ_FORA_DA_META: return 3;
+    case BUZZ_REDE_PRESENTE: return 1;
+    case BUZZ_REDE_AUSENTE: return 1;
     default: return 0;
   }
 }
@@ -84,6 +94,10 @@ uint16_t Buzzer::frequenciaHz(uint8_t indiceNota, BuzzerPadrao padrao) {
       if (indiceNota == 0) return 2500;
       if (indiceNota == 1) return 2000;
       return 1500;
+    case BUZZ_REDE_PRESENTE:
+      return BUZZ_ZC_LIGADO_HZ;
+    case BUZZ_REDE_AUSENTE:
+      return BUZZ_ZC_DESLIGADO_HZ;
     default:
       return 0;
   }
@@ -95,6 +109,8 @@ uint16_t Buzzer::duracaoMs(uint8_t indiceNota, BuzzerPadrao padrao) {
     case BUZZ_CONFIRMACAO: return 100;
     case BUZZ_META_ATINGIDA: return 120;
     case BUZZ_FORA_DA_META: return 140;
+    case BUZZ_REDE_PRESENTE: return BUZZ_ZC_LIGADO_MS;
+    case BUZZ_REDE_AUSENTE: return BUZZ_ZC_DESLIGADO_MS;
     default: return 0;
   }
 }
