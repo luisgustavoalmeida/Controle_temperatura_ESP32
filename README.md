@@ -1,204 +1,419 @@
-# Controle de temperatura — ESP32 + PID + chuveiro
+# Controle de Temperatura — ESP32 + PID + Dimmer TRIAC
 
-Firmware para **Arduino IDE** ou **PlatformIO**, em placa **ESP32** (referência de fiação: **NodeMCU-32S** / ESP-WROOM-32; na IDE use **ESP32 Dev Module**). Malha fechada PID com atuador **RobotDyn AC Light Dimmer** (corte de fase TRIAC via **rbdimmerESP32**), sensor **DS18B20**, display **LCD 20×4 I2C**, **encoder rotativo** e **buzzer**.
+Firmware embarcado para **regulação de temperatura de chuveiro elétrico** com malha fechada **PID**, atuador de potência por **corte de fase (TRIAC)**, interface local via **LCD 20×4 I2C** e **encoder rotativo**, e feedback sonoro por **buzzer**.
 
-A regulagem **não pausa** quando a temperatura entra na faixa do alvo: o PID continua atuando. A histerese (`BUZZER_HISTERESE_C`) vale só para o **buzzer** e para o texto **Temp OK** no LCD.
+Desenvolvido para placa **ESP32** (referência de fiação: **NodeMCU-32S** / ESP-WROOM-32). Compatível com **PlatformIO** e **Arduino IDE** (core Arduino-ESP32 **3.x**).
 
-Os ganhos PID foram calibrados no projeto irmão [`Malha_PID_temperatura`](../Malha_PID_temperatura) (portados de `pid_controller.py`):
+---
+
+## Sumário
+
+- [Características](#características)
+- [Visão geral do sistema](#visão-geral-do-sistema)
+- [Hardware](#hardware)
+- [Pinagem (GPIO)](#pinagem-gpio)
+- [Instalação e compilação](#instalação-e-compilação)
+- [Testes de hardware](#testes-de-hardware)
+- [Interface do usuário](#interface-do-usuário)
+- [Arquitetura do software](#arquitetura-do-software)
+- [Configuração (`config.h`)](#configuração-configh)
+- [Depuração serial](#depuração-serial)
+- [Segurança](#segurança)
+- [Estrutura do repositório](#estrutura-do-repositório)
+
+---
+
+## Características
+
+| Área | Detalhe |
+|------|---------|
+| **Controle** | Malha PID contínua (não pausa na meta); modo alternativo de **potência manual** (0–100 %) |
+| **Atuador** | RobotDyn AC Light Dimmer + biblioteca **rbdimmerESP32** (TRIAC, zero-cross) |
+| **Sensor** | DS18B20 assíncrono (11 bits, ~380 ms), filtro e validação de leituras |
+| **Interface** | LCD 20×4 I2C, encoder KY-040, buzzer ativo |
+| **Monitoramento** | Cronômetro de uso e energia integrada (∫P·dt) com detecção de rede via zero-cross |
+| **Segurança** | Modo seguro em falha de sensor; desligamento automático por inatividade (40 min); boot em standby |
+| **Loop** | Arquitetura não bloqueante — tarefas periódicas independentes, sem `delay()` no `loop()` |
+
+---
+
+## Visão geral do sistema
+
+```mermaid
+flowchart LR
+  subgraph Entradas
+    DS18B20["DS18B20\n(temperatura)"]
+    ENC["Encoder\n(setpoint / potência)"]
+    ZC["Zero-cross\n(rede AC)"]
+  end
+
+  subgraph ESP32
+    PID["Controlador PID\nou modo manual"]
+    FILT["Filtro / validação"]
+    UI["Interface\n(LCD + buzzer)"]
+    MED["Medidor de uso\n(tempo + energia)"]
+  end
+
+  subgraph Saída
+    DIM["Dimmer TRIAC\n(0–100 %)"]
+    CHU["Chuveiro elétrico"]
+  end
+
+  DS18B20 --> FILT --> PID
+  ENC --> PID
+  ENC --> UI
+  PID --> DIM --> CHU
+  ZC --> MED
+  ZC --> UI
+  PID --> UI
+  FILT --> UI
+  MED --> UI
+```
+
+O PID produz uma saída normalizada **0,0–1,0**, convertida em **0–100 %** de potência no dimmer. A histerese de temperatura (`BUZZER_HISTERESE_C`) afeta **apenas** o buzzer, o backlight e o indicador **Temp OK** no LCD — a malha continua regulando dentro da faixa.
+
+Ganhos PID calibrados no projeto irmão [`Malha_PID_temperatura`](../Malha_PID_temperatura) (portados de `pid_controller.py`):
 
 | Parâmetro | Valor |
 |-----------|-------|
-| Kp | 0,025 |
-| Ki | 0,0013 |
-| Kd | 0,01 |
+| Kp | 0,030 |
+| Ki | 0,001 |
+| Kd | 0,270 |
 
-Saída do PID: **0,0** a **1,0** = potência no dimmer (1 = máx., 0 = mínima/off). O LCD exibe o percentual correspondente na linha 3.
+---
+
+## Hardware
+
+### Componentes principais
+
+| Item | Modelo / tipo | Função |
+|------|---------------|--------|
+| Microcontrolador | ESP32 (NodeMCU-32S) | Processamento e I/O |
+| Sensor | DS18B20 (à prova d'água) | Temperatura da água |
+| Atuador | RobotDyn AC Light Dimmer | Corte de fase TRIAC (BTA41) |
+| Display | LCD 20×4 + PCF8574 (I2C) | Interface visual |
+| Encoder | KY-040 ou equivalente | Ajuste de setpoint / potência |
+| Buzzer | Ativo (3,3 V) | Feedback sonoro |
+| Pull-up | 4,7 kΩ | Barramento 1-Wire do DS18B20 |
+
+### Alimentação
+
+| Periférico | Tensão |
+|------------|--------|
+| DS18B20, encoder, buzzer, lógica do dimmer | **3,3 V** |
+| LCD I2C | **5 V** ou **3,3 V** (conforme módulo) |
+| Chuveiro (potência) | **Rede AC** — via dimmer TRIAC |
+
+> **Atenção:** o dimmer atua na **linha de potência** do chuveiro. Nunca conecte GPIO diretamente à tensão de rede.
+
+### GPIO a evitar no ESP32
+
+Pinos reservados ou restritos: **0**, **2**, **15** (boot), **6–11** (flash SPI), **34–39** (somente entrada).
+
+---
 
 ## Pinagem (GPIO)
 
-Valores definidos em `config.h` (diagrama detalhado no cabeçalho do arquivo e em `imagens/Imagem pinos ESP32.png`, se existir):
+Valores definidos em [`config.h`](config.h). Diagrama de referência: `imagens/Imagem pinos ESP32.png` (se disponível no repositório).
 
 | Função | GPIO | Observação |
 |--------|------|------------|
 | DS18B20 (DQ) | 4 | Pull-up **4,7 kΩ** entre DQ e 3,3 V |
-| Dimmer ZC (zero-cross) | 5 | Entrada de detecção de cruzamento por zero |
-| Dimmer PSM (disparo) | 18 | Saída de disparo do TRIAC (gate do BTA41) |
+| Dimmer ZC (zero-cross) | 5 | Detecção de cruzamento por zero |
+| Dimmer PSM (disparo TRIAC) | 18 | Gate do TRIAC |
 | I2C SDA (LCD) | 21 | |
 | I2C SCL (LCD) | 22 | |
 | Encoder CLK (A) | 25 | `INPUT_PULLUP` |
 | Encoder DT (B) | 26 | |
-| Encoder SW | 27 | Botão para GND ao pressionar |
-| Buzzer | 32 | Ativo recomendado; (−) em GND |
+| Encoder SW (botão) | 27 | Pressionado = GND |
+| Buzzer | 32 | Terminal (−) em GND |
 
-**Alimentação (resumo):** DS18B20, encoder, buzzer e módulo dimmer (lógica) em **3,3 V**; LCD em **5 V** ou **3,3 V** conforme o módulo. O dimmer atua na **linha de potência** do chuveiro (TRIAC + zero-cross) — não use GPIO direto em tensão de rede.
+**LCD I2C:** endereço padrão **0x27** (`LCD_ENDERECO_I2C`; alternativa comum **0x3F** — use `teste_lcd` para descobrir). Layout PCF8574 **YWROBOT** (`LCD_LAYOUT_YWROBOT = 1`).
 
-**LCD I2C:** endereço padrão **0x27** (`LCD_ENDERECO_I2C`; comum também **0x3F** — use a varredura em `teste_lcd`). Layout PCF8574 **YWROBOT** (`LCD_LAYOUT_YWROBOT = 1`).
+---
 
-**GPIO a evitar:** 0, 2, 15 (boot), 6–11 (flash), 34–39 (somente entrada).
+## Instalação e compilação
 
-## Arduino IDE — configuração
+### Pré-requisitos
 
-### 1. Suporte ESP32
+- [PlatformIO](https://platformio.org/) **ou** [Arduino IDE](https://www.arduino.cc/en/software) com suporte ESP32
+- Cabo USB para gravação
+- Core **Arduino-ESP32 3.x** (obrigatório para `rbdimmerESP32`)
 
-- **Ferramentas** → **Placa** → **Gerenciador de placas**
-- Instale **esp32** (Espressif Systems)
+### PlatformIO (recomendado)
 
-### 2. Bibliotecas
-
-**Sketch** → **Incluir Biblioteca** → **Gerenciar Bibliotecas**:
-
-1. **OneWire 2.3.8** — use a pasta [`libraries/OneWire`](libraries/OneWire) deste repositório (compatível com ESP32 core 3.x). Se existir `arduino_514513` em `Documentos/Arduino/libraries`, **apague** (versão incompatível). Detalhes em [`libraries/README.md`](libraries/README.md).
-2. **DallasTemperature** — Miles Burton (Gerenciador de bibliotecas).
-3. **LCD I2C** — conforme `config.h`:
-   - `LCD_USA_NEW_LIQUIDCRYSTAL = 1` → **NewLiquidCrystal** (pasta `NewLiquidCrystal_lib` no Arduino IDE).
-   - `LCD_USA_NEW_LIQUIDCRYSTAL = 0` → **LiquidCrystal I2C** (marcoschwartz / Frank de Brabander).
-
-O arquivo [`lcd_i2c_compat.h`](lcd_i2c_compat.h) unifica inicialização, varredura I2C e o mapeamento **YWROBOT** (evita backlight piscando sem texto).
-
-### 3. Abrir o sketch
-
-Abra `Controle_temperatura_ESP32.ino` (a pasta inteira vira o projeto).
-
-### 4. Placa e upload
-
-| Opção | Valor |
-|-------|-------|
-| Placa | **ESP32 Dev Module** |
-| Porta | COM do ESP32 (ex.: COM4) |
-| Upload speed | 921600 ou **115200** se falhar |
-
-Monitor serial: **115200** baud.
-
-> Você pode editar no **Cursor** e compilar/gravar na **Arduino IDE** — os dois usam a mesma pasta.
-
-## PlatformIO (opcional)
-
-Arquivo [`platformio.ini`](platformio.ini): ambiente `esp32dev`, **pioarduino** (Arduino-ESP32 3.x), `monitor_speed = 115200`.
-
-Dependências declaradas: **OneWire**, **DallasTemperature**, **LiquidCrystal I2C** (marcoschwartz), **rbdimmerESP32**. Para compilar com o mesmo LCD da Arduino IDE (**NewLiquidCrystal** + layout YWROBOT), instale a biblioteca correspondente e mantenha `LCD_USA_NEW_LIQUIDCRYSTAL = 1` em `config.h`; ou defina `LCD_USA_NEW_LIQUIDCRYSTAL = 0` e use apenas a lib do `platformio.ini`.
+O arquivo [`platformio.ini`](platformio.ini) define o ambiente `esp32dev` com **pioarduino** (Arduino-ESP32 3.x), monitor serial a **115200** baud e upload a **921600** baud.
 
 ```bash
+# Compilar e gravar
 pio run -t upload
+
+# Monitor serial
 pio device monitor -b 115200
 ```
 
-## Testes de hardware (antes do firmware principal)
+**Ambientes de curva do dimmer** (sobrescrevem `DIMMER_CURVA_TIPO` sem editar `config.h`):
 
-Na pasta [`testes_hardware/`](testes_hardware/) há um sketch por periférico (mesmos pinos de `config.h`). Grave na Arduino IDE e acompanhe o **Monitor Serial (115200 baud)**. Detalhes em [`testes_hardware/README.md`](testes_hardware/README.md).
+```bash
+pio run -e esp32dev_curva_linear -t upload   # linear
+pio run -e esp32dev_curva_rms     -t upload   # RMS (carga resistiva)
+pio run -e esp32dev_curva_log     -t upload   # logarítmica
+```
 
-| Ordem | Pasta | Objetivo |
-|-------|-------|----------|
-| 1 | `teste_buzzer/` | Bipes |
-| 2 | `teste_lcd/` | I2C + texto (layout/endereço) |
-| 3 | `teste_ds18b20/` | Temperatura |
-| 4 | `teste_encoder/` | Giro, botão, duplo clique |
+Dependências declaradas: **OneWire**, **DallasTemperature**, **LiquidCrystal I2C** (marcoschwartz), **rbdimmerESP32**.
 
-## Estrutura do código
+> Por padrão, o `platformio.ini` compila com `LCD_USA_NEW_LIQUIDCRYSTAL=0` (marcoschwartz). Para o mesmo LCD da Arduino IDE (**NewLiquidCrystal** + layout YWROBOT), instale a biblioteca correspondente e defina `LCD_USA_NEW_LIQUIDCRYSTAL = 1` em `config.h`.
 
-Todos os módulos têm comentários em português no cabeçalho e nas funções públicas.
+### Arduino IDE
 
-| Arquivo | Função |
-|---------|--------|
-| `config.h` | Pinos, PID, setpoint, períodos, dimmer, DS18B20, LCD, serial debug |
-| `Controle_temperatura_ESP32.ino` | Programa principal — `setup()` / `loop()` e tarefas periódicas |
-| `pid_controller.*` | PID com limite na integral e anti-windup (back-calculation) |
-| `atuador_dimmer.*` | Atuador da malha — PID 0..1 → nível 0..100 % (rbdimmerESP32) |
-| `sensor_ds18b20.*` | DS18B20 assíncrono (12 bits, ~750 ms) |
-| `lcd_i2c_compat.h` | Compatibilidade e scan I2C (NewLiquidCrystal / marcoschwartz) |
-| `display_lcd.*` | Layout das 4 linhas e estados |
-| `encoder_rotativo.*` | Setpoint e eventos (giro, clique, duplo, clique longo) |
-| `buzzer.*` | Feedback sonoro |
+#### 1. Suporte ESP32
 
-### Fluxo do `loop()`
+**Ferramentas → Placa → Gerenciador de placas** → instale **esp32** (Espressif Systems).
 
-O `loop()` **não usa `delay()`** (exceto splash curto no `setup()`). Quatro tarefas, cada uma no intervalo de `config.h`:
+#### 2. Bibliotecas
 
-| Tarefa | Período | Conteúdo |
-|--------|---------|----------|
-| `tarefaInterfaceUsuario()` | 10 ms (`PERIODO_LOOP_MS`) | Encoder + buzzer |
-| `tarefaLeituraSensor()` | 800 ms (`PERIODO_SENSOR_MS`) | DS18B20 — conversão em paralelo (~750 ms) |
-| `tarefaMalhaPid()` | 100 ms (`PERIODO_PID_MS`) | PID + dimmer |
-| `tarefaAtualizarDisplay()` | 100 ms (`PERIODO_LCD_MS`) | LCD (cache; só redesenha se mudou) |
+**Sketch → Incluir Biblioteca → Gerenciar Bibliotecas**:
 
-**Auxiliares no `.ino`:** filtro de temperatura (`FILTRO_TEMP_AMOSTRAS` em `config.h`), modo seguro se o sensor falhar, detecção de meta para buzzer, ligar/desligar malha, mensagens de transição no LCD.
+| Biblioteca | Origem |
+|------------|--------|
+| **OneWire 2.3.8** | Pasta [`libraries/OneWire`](libraries/OneWire) deste repositório (compatível ESP32 core 3.x) |
+| **DallasTemperature** | Miles Burton (Gerenciador) |
+| **LCD I2C** | Conforme `LCD_USA_NEW_LIQUIDCRYSTAL` em `config.h` (NewLiquidCrystal ou marcoschwartz) |
 
-### Estados no LCD
+Se a compilação falhar com erros em `GPIO` / `OneWire_direct_gpio.h`, remova bibliotecas antigas duplicadas (ex.: `Documents/Arduino/libraries/arduino_514513`). Detalhes em [`libraries/README.md`](libraries/README.md).
 
-| Estado | Linha 2 / 3 (resumo) |
-|--------|------------------------|
+O arquivo [`lcd_i2c_compat.h`](lcd_i2c_compat.h) unifica inicialização, varredura I2C e mapeamento **YWROBOT**.
+
+#### 3. Abrir, compilar e gravar
+
+1. Abra `Controle_temperatura_ESP32.ino` (a pasta inteira vira o projeto).
+2. Selecione **ESP32 Dev Module** e a porta COM correta.
+3. Upload speed: **921600** (ou **115200** se falhar).
+4. Monitor serial: **115200** baud.
+
+> Você pode editar no **Cursor** e compilar/gravar na **Arduino IDE** — ambos usam a mesma pasta.
+
+---
+
+## Testes de hardware
+
+Antes do firmware principal, valide cada periférico com os sketches em [`testes_hardware/`](testes_hardware/). Grave **um teste por vez** e acompanhe o Monitor Serial (**115200** baud). Detalhes em [`testes_hardware/README.md`](testes_hardware/README.md).
+
+| Ordem | Pasta | Valida |
+|-------|-------|--------|
+| 1 | `teste_buzzer/` | Buzzer em `PINO_BUZZER` |
+| 2 | `teste_lcd/` | LCD I2C — endereço e layout |
+| 3 | `teste_ds18b20/` | Sensor em `PINO_SENSOR_TEMP` |
+| 4 | `teste_encoder/` | Giro, clique, duplo clique |
+
+> Não há sketch dedicado para o dimmer TRIAC — teste o atuador com o firmware principal em bancada controlada.
+
+---
+
+## Interface do usuário
+
+### Display (LCD 20×4)
+
+| Linha | Conteúdo |
+|-------|----------|
+| 0 | Tempo de uso (MM:SS), energia (kWh), indicador **on** (rede presente) |
+| 1 | Alvo de temperatura (°C) ou potência (%) |
+| 2 | Temperatura atual (2 casas decimais) |
+| 3 | Potência (%), modo (PID / POT), status (**Temp OK**, **OFF**, **FALHA SENS**, etc.) |
+
+**Estados do sistema:**
+
+| Estado | Descrição |
+|--------|-----------|
 | `ESTADO_AGUARDE_SENSOR` | Aguardando primeira leitura válida |
-| `ESTADO_PID_ATIVO` | Regulação; animação `PID.` na linha 4 até meta |
-| `ESTADO_CONTROLE_DESLIGADO` | Malha off — potência 0 % |
-| `ESTADO_SENSOR_ERRO` | Falha — potência mínima forçada |
+| `ESTADO_PID_ATIVO` | Regulação PID; animação `PID.` na linha 4 até meta |
+| `ESTADO_POTENCIA_ATIVO` | Modo potência manual ativo |
+| `ESTADO_CONTROLE_DESLIGADO` | Malha em standby — potência 0 % |
+| `ESTADO_SENSOR_ERRO` | Falha persistente — potência mínima forçada |
 
-Linha 0: **Controle PID ON/OFF** ou mensagens *Ligando/Desligando Malha PID...* (~2,5 s). Linha 1: alvo; linha 2: temperatura atual (2 casas decimais); linha 3: potência % e status (`Temp OK`, `OFF`, `FALHA SENS`, etc.).
+O backlight apaga após **30 s** de inatividade com controle desligado; religa ao interagir com o encoder.
 
-## Uso (interface)
-
-### Setpoint (encoder)
-
-| Ação | Comportamento |
-|------|----------------|
-| Girar encoder | Passo **0,25 °C** (`ALVO_TEMP_PASSO_C`); LCD atualiza na hora |
-| Parar de girar | Após **1,5 s** (`ALVO_TEMP_PAUSA_MS`) o alvo entra no PID |
-| Alvo pendente no LCD | Linha `Alvo: XX.XX >` (sem `C`) até aplicar na malha |
-| Segurar botão + girar | Passo fino **0,01 °C** (`ALVO_TEMP_PASSO_FINO_C`) |
-| Faixa | **10,0** a **45,0 °C** |
-| Valor inicial | **38,0 °C** (`ALVO_TEMP_PADRAO_C`) |
-
-### Malha PID
+### Encoder — setpoint de temperatura (modo PID)
 
 | Ação | Comportamento |
-|------|----------------|
-| **Duplo clique** (malha ligada) | Standby: dimmer 0 %, malha **pausada** (OUT/integral preservados) |
-| **Clique simples** (malha desligada) | Religa e aplica a OUT memorizada |
-| **Clique simples** (desligada e temp. muito abaixo do alvo) | Religa com `pid.reiniciar()` se `SP − PV > STANDBY_RELIGA_REINICIA_DELTA_C` (default 3 °C) |
-| **Clique longo** (~800 ms, sem girar) | Reinicia o PID (`ENCODER_CLIQUE_LONGO_MS`) |
-| Boot | Malha **desligada** por padrão (`MALHA_INICIA_ATIVA = false`) — **clique simples** para ligar |
+|------|---------------|
+| Girar | Passo **0,25 °C**; LCD atualiza imediatamente |
+| Parar de girar | Após **1,5 s** o alvo é aplicado na malha PID |
+| Alvo pendente | Linha exibe `Alvo: XX.XX >` (seta indica direção) |
+| Botão + girar | Passo fino **0,01 °C** |
+| Faixa | **10,0** a **45,0 °C** (padrão: **38,0 °C**) |
 
-Em standby o dimmer fica em 0 %; a saída da malha (`saidaPid`) permanece na RAM até religar.
+### Encoder — potência manual (modo POT)
+
+| Ação | Comportamento |
+|------|---------------|
+| Girar | Passo **±1 %** (mantém décimos) |
+| Botão + girar | Passo fino **0,1 %** |
+| Faixa | **0** a **100 %** |
+
+Alternar entre modos: **segurar o botão 3 s** sem girar (`ENCODER_TROCA_MODO_MS`).
+
+### Controle da malha
+
+| Ação | Comportamento |
+|------|---------------|
+| **Duplo clique** (malha ligada) | Standby: dimmer 0 %, malha pausada (OUT/integral preservados) |
+| **Clique simples** (malha desligada) | Religa e aplica a saída memorizada |
+| **Clique simples** (água fria) | Reinicia PID se `SP − PV > 3 °C` |
+| **Clique longo** (~800 ms) | Reinicia o PID (modo temperatura) |
+| **Boot** | Malha **desligada** por padrão — clique para ligar |
+| **Inatividade 40 min** | Desligamento automático com confirmação sonora |
+
+Em standby o dimmer fica em **0 %**; a saída da malha permanece na RAM até religar.
 
 ### Buzzer
 
 | Evento | Som |
 |--------|-----|
-| Entrou na faixa do alvo (± `BUZZER_HISTERESE_C`, default 0,2 °C) | 3 tons ascendentes |
-| Saiu da faixa (tinha atingido e afastou) | 3 tons descendentes |
+| Entrou na faixa do alvo (± 0,2 °C) | 3 tons ascendentes |
+| Saiu da faixa | 3 tons descendentes |
+| Rede presente / ausente (zero-cross) | Tom curto distinto |
 | Rotação do encoder | Clique curto |
-| Duplo clique / clique (religar) / clique longo | Confirmação |
+| Duplo clique / religar / clique longo / troca de modo | Confirmação |
 
-### Atuador dimmer (RobotDyn + rbdimmerESP32)
+---
 
-O PID entrega **OUT 0..1**, convertido em **0..100 %** no dimmer (`atuador_dimmer.*`). Pinos em `config.h`:
+## Arquitetura do software
 
-| Constante | Uso |
-|-----------|-----|
-| `PINO_DIMMER_ZC` | Zero-cross (GPIO 5) |
-| `PINO_DIMMER_PSM` | Disparo TRIAC (GPIO 18) |
-| `DIMMER_CURVA_TIPO` | `LINEAR`, `RMS` (chuveiro) ou `LOGARITMICA` |
-| `DIMMER_FREQUENCIA_REDE_HZ` | `0` = detecção automática; `60` para rede fixa |
-| `DIMMER_HISTERESIS_SAIDA_*` | Opcional — reduz atualizações se OUT oscilar pouco |
+### Estrutura de módulos
 
-### Ajustes em `config.h` (demais)
+Todos os módulos possuem comentários em português no cabeçalho e nas funções públicas.
 
-| Constante | Uso |
-|-----------|-----|
-| `SERIAL_DEPURAR_MALHA` | `true`: linha `[MALHA]` a cada passo PID (SP, PV, P, I, D, OUT, PCT, DIM, META, ACT) |
-| `LCD_ENDERECO_I2C` / `LCD_LAYOUT_YWROBOT` | Endereço e mapeamento do módulo I2C |
-| `MALHA_INICIA_ATIVA` | `true` para iniciar já regulando |
-| `FILTRO_TEMP_AMOSTRAS` | Amostras na média móvel da temperatura antes do PID |
+| Arquivo | Responsabilidade |
+|---------|------------------|
+| [`config.h`](config.h) | Pinos, PID, períodos, dimmer, sensor, LCD, serial |
+| [`Controle_temperatura_ESP32.ino`](Controle_temperatura_ESP32.ino) | `setup()` / `loop()` e orquestração de tarefas |
+| [`pid_controller.*`](pid_controller.h) | PID com limite na integral e anti-windup |
+| [`atuador_dimmer.*`](atuador_dimmer.h) | OUT 0..1 → nível 0..100 % (rbdimmerESP32) |
+| [`sensor_ds18b20.*`](sensor_ds18b20.h) | DS18B20 assíncrono com reenumeração |
+| [`lcd_i2c_compat.h`](lcd_i2c_compat.h) | Compatibilidade LCD (NewLiquidCrystal / marcoschwartz) |
+| [`display_lcd.*`](display_lcd.h) | Layout das 4 linhas, estados e backlight |
+| [`encoder_rotativo.*`](encoder_rotativo.h) | Setpoint, eventos e troca de modo |
+| [`buzzer.*`](buzzer.h) | Feedback sonoro |
+| [`medidor_uso.*`](medidor_uso.h) | Cronômetro e energia ∫P·dt |
+
+### Tarefas periódicas (`loop()`)
+
+O `loop()` **não usa `delay()`** (exceto splash curto no `setup()`). Quatro tarefas independentes:
+
+| Tarefa | Período | Conteúdo |
+|--------|---------|----------|
+| `tarefaInterfaceUsuario()` | 5 ms | Encoder, buzzer, zero-cross, inatividade |
+| `tarefaLeituraSensor()` | 380 ms | DS18B20 — conversão assíncrona |
+| `tarefaMalhaPid()` | 100 ms | PID ou potência manual + dimmer |
+| `tarefaAtualizarDisplay()` | 100 ms | LCD (cache — redesenha só se mudou) |
+
+**Recursos auxiliares no `.ino`:** filtro de temperatura, validação de leituras (faixa, salto máximo, falhas consecutivas), modo seguro, detecção de meta, medidor de uso, mensagens de transição no LCD.
+
+---
+
+## Configuração (`config.h`)
+
+Parâmetros mais relevantes para ajuste em campo:
+
+### PID e temperatura
+
+| Constante | Descrição |
+|-----------|-----------|
+| `PID_GANHO_KP/KI/KD` | Ganhos do controlador |
+| `ALVO_TEMP_*` | Faixa, passo e valor padrão do setpoint |
+| `MALHA_INICIA_ATIVA` | `true` = regulando no boot; `false` = standby (padrão) |
+| `FILTRO_TEMP_AMOSTRAS` | Amostras na média móvel antes do PID |
+| `BUZZER_HISTERESE_C` | Faixa de meta para buzzer e **Temp OK** |
+
+### Dimmer (RobotDyn + rbdimmerESP32)
+
+| Constante | Descrição |
+|-----------|-----------|
+| `PINO_DIMMER_ZC` / `PINO_DIMMER_PSM` | Pinos zero-cross e disparo TRIAC |
+| `DIMMER_CURVA_TIPO` | `LINEAR`, `RMS` (carga resistiva) ou `LOGARITMICA` |
+| `DIMMER_FREQUENCIA_REDE_HZ` | `60` (Brasil); `50` (Europa); `0` = auto |
+| `DIMMER_NIVEL_MIN` / `DIMMER_NIVEL_MAX` | Faixa efetiva enviada ao dimmer |
+| `DIMMER_USA_CALIBRACAO_POTENCIA_LINEAR` | Tabela de calibração potência real vs. comando |
+| `DIMMER_HISTERESIS_SAIDA_*` | Reduz atualizações se OUT oscilar pouco |
+
+### Sensor DS18B20
+
+| Constante | Descrição |
+|-----------|-----------|
+| `SENSOR_RESOLUCAO_BITS` | 9–12 bits (padrão: **11** → ~380 ms) |
+| `SENSOR_FALHAS_ANTES_ERRO` | Falhas consecutivas para modo seguro |
+| `SENSOR_LEITURA_MIN/MAX_C` | Faixa plausível de temperatura |
+| `SENSOR_SALTO_MAXIMO_C` | Rejeita picos no barramento 1-Wire |
+
+### Interface e energia
+
+| Constante | Descrição |
+|-----------|-----------|
+| `LCD_ENDERECO_I2C` / `LCD_LAYOUT_YWROBOT` | Endereço e mapeamento do LCD |
+| `AUTO_DESLIGA_INATIVIDADE_MS` | Timeout de desligamento automático (40 min) |
+| `POTENCIA_MAX_WATTS` | Potência de referência para cálculo de energia (6000 W) |
+| `SERIAL_DEPURAR_MALHA` | Log `[MALHA]` a cada passo PID |
+
+---
+
+## Depuração serial
+
+Monitor serial a **115200** baud. Com `SERIAL_DEPURAR_MALHA = true`, cada passo PID imprime:
+
+```
+[MALHA] MOD=PID ACT=1 SP=38.00 ERR=... P=... I=... D=... OUT=... PV=... PCT=... DIM=... META=...
+```
+
+No boot, o firmware reporta pinos do dimmer, curva configurada e estado inicial:
+
+```
+=== Inicio: controle chuveiro ESP32 ===
+[DIM] rbdimmerESP32 + Arduino-ESP32 3.x (pioarduino)
+[DIM] ZC=5 PSM=18
+```
+
+---
 
 ## Segurança
 
-Controle na **linha de potência** do chuveiro exige projeto elétrico adequado (DR, terra, isolamento). Este firmware **não substitui** proteções de segurança.
+> **Este firmware controla equipamento conectado à rede elétrica.** Exige projeto elétrico adequado: disjuntor, DR (diferencial residual), aterramento e isolamento galvânico. **Não substitui** proteções de segurança obrigatórias.
 
-Em **falha do sensor** ou leitura inválida: dimmer no **mínimo**, PID reiniciado, mensagem no LCD e serial.
+**Comportamento em falha:**
 
-## Testes em bancada (firmware principal)
+- Leitura inválida ou sensor ausente → dimmer no **mínimo**, PID reiniciado, mensagem **FALHA SENS** no LCD.
+- Falhas isoladas são ignoradas; modo seguro só após **4 falhas consecutivas** (`SENSOR_FALHAS_ANTES_ERRO`).
+- Recuperação automática após **2 leituras válidas** consecutivas.
 
-1. LCD — splash *Controle Temperatura* / *ESP32 + PID*; depois linhas de operação.
-2. DS18B20 — temperatura coerente na linha *Atual*.
-3. Encoder — limites 10–45 °C, passos fino/grosso, beeps.
-4. Duplo clique — standby (dimmer 0 %); clique simples religa com OUT preservada.
-5. Dimmer — `%` na linha 3 acompanha o PID (e `[MALHA]` na serial se debug ativo).
-6. Malha fechada — carga térmica controlada (água); buzzer na entrada/saída da faixa do alvo.
+**Recomendações de bancada:**
+
+1. Valide LCD, sensor, encoder e buzzer com os testes de hardware.
+2. Teste o dimmer **sem carga** ou com carga controlada antes de conectar o chuveiro.
+3. Verifique zero-cross: indicador **on** na linha 0 e beep ao energizar/desenergizar a rede.
+4. Confirme regulagem térmica com carga real (água) e monitore `[MALHA]` na serial.
+
+---
+
+## Estrutura do repositório
+
+```
+Controle_temperatura_ESP32/
+├── Controle_temperatura_ESP32.ino   # Programa principal
+├── config.h                         # Constantes globais
+├── pid_controller.cpp/h             # Controlador PID
+├── atuador_dimmer.cpp/h               # Dimmer TRIAC
+├── sensor_ds18b20.cpp/h               # Sensor DS18B20
+├── display_lcd.cpp/h                  # Display LCD
+├── encoder_rotativo.cpp/h             # Encoder rotativo
+├── buzzer.cpp/h                       # Buzzer
+├── medidor_uso.cpp/h                  # Cronômetro + energia
+├── lcd_i2c_compat.h                   # Compatibilidade LCD I2C
+├── platformio.ini                     # Build PlatformIO
+├── libraries/                         # OneWire local (ESP32 3.x)
+├── testes_hardware/                   # Sketches de validação
+└── README.md                          # Este arquivo
+```
+
+---
+
+**Desenvolvido para controle térmico de chuveiro elétrico com ESP32.** Ajuste os parâmetros em `config.h` conforme sua instalação e calibração de bancada.
