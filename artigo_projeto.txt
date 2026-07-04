@@ -877,24 +877,24 @@ feedback ao usuário (buzzer e indicador visual).
 
     ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
     │ Encoder + LCD   │────►│ referência       │     │ Sensor DS18B20      │
-    │ (entrada usuário)│     │ (temperatura     │     │ (temperatura medida)│
+    │(entrada usuário)│     │ (temperatura     │     │ (temperatura medida)│
     └─────────────────┘     │  desejada)       │     └──────────┬──────────┘
                             └────────┬─────────┘                │
                                      │                          │
                                      ▼                          ▼
                                ┌──────────────────────────────────────┐
-                               │  Controlador PID (periodicidade 100 ms)│
-                               │  termos P + I + D, anti-windup         │
+                               │Controlador PID (periodicidade 100 ms)│
+                               │termos P + I + D, anti-windup         │
                                └─────────────────┬────────────────────┘
                                                  │ sinal_de_controle ∈ [0, 1]
                                                  ▼
                                ┌──────────────────────────────────────┐
-                               │  Atuador dimmer + zero-cross           │
+                               │  Atuador dimmer + zero-cross         │
                                └─────────────────┬────────────────────┘
                                                  │ disparo do TRIAC
                                                  ▼
                                ┌──────────────────────────────────────┐
-                               │  Resistor do chuveiro (220 V CA)       │
+                               │  Resistor do chuveiro (220 V CA)     │
                                └──────────────────────────────────────┘
 
 Legenda do fluxo:

@@ -4,10 +4,19 @@ Firmware embarcado para **regulação de temperatura de chuveiro elétrico** com
 
 Desenvolvido para placa **ESP32** (referência de fiação: **NodeMCU-32S** / ESP-WROOM-32). Compatível com **PlatformIO** e **Arduino IDE** (core Arduino-ESP32 **3.x**).
 
+![Projeto concluído — painel com LCD 20×4, encoder e encapsulamento](Imagem%20projeto.jpg)
+
+*Interface em operação: cronômetro, consumo acumulado (kWh), setpoint, temperatura atual, potência do dimmer e indicador Temp OK.*
+
+Para **detalhes técnicos ampliados** — teoria da malha PID, calibração, dimensionamento elétrico, arquitetura do firmware e resultados de bancada — consulte o artigo em PDF:
+
+**[Controle de Temperatura por Malha PID Embarcada - ESP32.pdf](Controle%20de%20Temperatura%20por%20Malha%20PID%20Embarcada%20-%20ESP32.pdf)**
+
 ---
 
 ## Sumário
 
+- [Documentação detalhada (PDF)](#documentação-detalhada-pdf)
 - [Características](#características)
 - [Visão geral do sistema](#visão-geral-do-sistema)
 - [Hardware](#hardware)
@@ -20,6 +29,18 @@ Desenvolvido para placa **ESP32** (referência de fiação: **NodeMCU-32S** / ES
 - [Depuração serial](#depuração-serial)
 - [Segurança](#segurança)
 - [Estrutura do repositório](#estrutura-do-repositório)
+
+---
+
+## Documentação detalhada (PDF)
+
+O repositório inclui um artigo técnico completo sobre o projeto:
+
+| Documento | Conteúdo |
+|-----------|----------|
+| [**Controle de Temperatura por Malha PID Embarcada - ESP32.pdf**](Controle%20de%20Temperatura%20por%20Malha%20PID%20Embarcada%20-%20ESP32.pdf) | Fundamentos do PID embarcado, escolha de componentes, esquema de ligação, calibração dos ganhos, testes práticos e considerações de segurança elétrica |
+
+O `README.md` resume instalação, pinagem e uso do firmware; o PDF aprofunda o **projeto como um todo** (hardware + controle + validação).
 
 ---
 
@@ -399,6 +420,7 @@ No boot, o firmware reporta pinos do dimmer, curva configurada e estado inicial:
 ```
 Controle_temperatura_ESP32/
 ├── Controle_temperatura_ESP32.ino   # Programa principal
+├── Controle de Temperatura por Malha PID Embarcada - ESP32.pdf  # Artigo técnico detalhado
 ├── config.h                         # Constantes globais
 ├── pid_controller.cpp/h             # Controlador PID
 ├── atuador_dimmer.cpp/h               # Dimmer TRIAC

@@ -1,0 +1,49 @@
+Malha PID embarcada: modelagem, sintonia e controle de potência.
+
+Como engenheiro, aprendi que projetos de controle de processos não nascem de um único conhecimento. Eles exigem integrar várias áreas ao mesmo tempo.
+
+Compartilho um trabalho que desenvolvi em algumas etapas: controle de temperatura em chuveiro elétrico com malha PID fechada, modelagem matemática até o firmware embarcado no ESP32.
+
+🔧 O que o sistema faz
+Um chuveiro convencional opera em malha aberta: você gira o potenciômetro e torce para a água ficar na temperatura certa, mas vazão, água fria e ambiente mudam tudo, sem correção automática.
+
+A solução: medir a temperatura da água (DS18B20), comparar com o setpoint definido pelo usuário (encoder + LCD) e atuar na potência via dimmer TRIAC com detecção de zero-cross, tudo em firmware não bloqueante no ESP32.
+
+📐 A engenharia por trás
+Para chegar até aqui, foi preciso conectar:
+
+→ Teoria de controle (malha fechada, PID, anti-windup, rejeição de perturbações)
+→ Modelagem física (balanço de energia, inércia térmica, atraso de transporte)
+→ Simulação computacional (Python, grid search, tuning robusto)
+→ Eletrônica de potência (TRIAC, corte de fase, isolamento galvânico)
+→ Firmware embarcado (C++, arquitetura modular, I2C, 1-Wire, interrupções)
+→ Instrumentação e validação experimental
+
+Não é “só programar um Arduino”. É projetar um sistema completo, e cada etapa depende da anterior.
+
+🔄 Repositórios do projeto:
+
+Etapa 1: Modelagem e simulação (antes de tocar no hardware):
+https://github.com/luisgustavoalmeida/Malha_PID_temperatura
+
+Etapa 2: Firmware embarcado e validação no equipamento real:
+https://github.com/luisgustavoalmeida/Controle_temperatura_ESP32
+
+Os ganhos do PID foram sintonizados em simulação e portados para o ESP32, reduzindo tentativa e erro no equipamento real.
+
+📄 Detalhes técnicos completos
+Anexei neste post o artigo do projeto em PDF, com fundamentação teórica, modelo matemático, evolução do atuador, falhas identificadas, arquitetura do firmware, testes e resultados experimentais.
+
+🏭 Por que isso importa para a indústria?
+O chuveiro é o laboratório, mas a lógica é a mesma de qualquer processo industrial:
+
+• Regulação automática de temperatura em trocadores, fornos e banhos químicos
+• Rejeição de perturbações (vazão, carga, ambiente) sem intervenção manual
+• Sintonia do controlador em simulação antes do deploy em campo
+• Firmware embarcado com arquitetura segura e monitoramento de uso/energia
+
+Soluções de controle bem projetadas significam menos desperdício de energia, maior repetibilidade do processo, menos retrabalho e operação mais segura. O mesmo raciocínio que estabiliza a temperatura do banho escala para linhas de produção, utilidades e automação de processos.
+
+Se você trabalha com automação, controle de processos, IoT industrial ou engenharia embarcada, os repositórios estão abertos. Fico à disposição para trocar ideias nos comentários.
+
+#Engenharia #ControleDeProcessos #PID #ESP32 #AutomaçãoIndustrial #FirmwareEmbarcado #IoT #EngenhariaDeControle #OpenSource #Inovação
