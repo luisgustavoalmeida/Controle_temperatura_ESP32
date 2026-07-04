@@ -2,9 +2,10 @@
 # Controle_temperatura_ESP32 — artefatos de build e ambiente local
 # =============================================================================
 
-# --- PlatformIO (raiz e testes_hardware/*/ ) ---
+# --- PlatformIO (raiz e testes_hardware/*/) ---
 .pio/
 **/.pio/
+compile_commands.json
 
 # --- Arduino IDE / arduino-cli ---
 build/
@@ -24,16 +25,15 @@ build/
 *.a
 *.out
 
-# --- VS Code / Cursor (caminhos e caches por máquina) ---
-.vscode/.browse.c_cpp.db*
-.vscode/ipch/
-.vscode/c_cpp_properties.json
-.vscode/launch.json
-.vscode/tasks.json
+# --- VS Code / Cursor (configuração local do editor) ---
+.vscode/
 *.code-workspace
 
 # --- Cursor (estado local da sessão) ---
 .cursor/
+
+# --- clangd / IntelliSense (gerado localmente) ---
+.cache/
 
 # --- Logs e temporários ---
 *.log
@@ -52,6 +52,13 @@ $RECYCLE.BIN/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# --- Microsoft Office (lock de edição e fonte Word) ---
+~$*
+*.docx
+
+# --- Rascunhos locais (não fazem parte do firmware) ---
+post_linkedin
 
 # --- Segredos (Wi-Fi, credenciais — se criar no futuro) ---
 .env
