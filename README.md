@@ -1,5 +1,8 @@
 # Controle de Temperatura — ESP32 + PID + Dimmer TRIAC
 
+[![PlatformIO](https://img.shields.io/badge/PlatformIO-esp32dev-007ACC?logo=platformio&logoColor=white)](platformio.ini)
+[![Arduino ESP32](https://img.shields.io/badge/Arduino--ESP32-3.x-00979D?logo=arduino&logoColor=white)](https://github.com/espressif/arduino-esp32)
+
 Firmware embarcado para **regulação de temperatura de chuveiro elétrico** com malha fechada **PID**, atuador de potência por **corte de fase (TRIAC)**, interface local via **LCD 20×4 I2C** e **encoder rotativo**, e feedback sonoro por **buzzer**.
 
 Desenvolvido para placa **ESP32** (referência de fiação: **NodeMCU-32S** / ESP-WROOM-32). Compatível com **PlatformIO** e **Arduino IDE** (core Arduino-ESP32 **3.x**).
@@ -8,16 +11,16 @@ Desenvolvido para placa **ESP32** (referência de fiação: **NodeMCU-32S** / ES
 
 *Interface em operação: cronômetro, consumo acumulado (kWh), setpoint, temperatura atual, potência do dimmer e indicador Temp OK.*
 
-Para **detalhes técnicos ampliados** — teoria da malha PID, calibração, dimensionamento elétrico, arquitetura do firmware e resultados de bancada — consulte o artigo em PDF:
-
-**[Controle de Temperatura por Malha PID Embarcada - ESP32.pdf](Controle%20de%20Temperatura%20por%20Malha%20PID%20Embarcada%20-%20ESP32.pdf)**
+> **Documentação ampliada:** teoria do PID, calibração, dimensionamento elétrico e resultados de bancada estão no [artigo técnico em PDF](#documentação-detalhada-pdf).
 
 ---
 
 ## Sumário
 
 - [Documentação detalhada (PDF)](#documentação-detalhada-pdf)
+- [Projeto relacionado](#projeto-relacionado)
 - [Características](#características)
+- [Início rápido](#início-rápido)
 - [Visão geral do sistema](#visão-geral-do-sistema)
 - [Hardware](#hardware)
 - [Pinagem (GPIO)](#pinagem-gpio)
@@ -29,6 +32,7 @@ Para **detalhes técnicos ampliados** — teoria da malha PID, calibração, dim
 - [Depuração serial](#depuração-serial)
 - [Segurança](#segurança)
 - [Estrutura do repositório](#estrutura-do-repositório)
+- [Licença e contribuições](#licença-e-contribuições)
 
 ---
 
@@ -44,6 +48,19 @@ O `README.md` resume instalação, pinagem e uso do firmware; o PDF aprofunda o 
 
 ---
 
+## Projeto relacionado
+
+Este repositório é a **Etapa 2** do projeto — firmware embarcado e validação no equipamento real. A **Etapa 1** (modelagem, simulação e sintonia do PID em Python) está em:
+
+| Etapa | Repositório | Conteúdo |
+|-------|-------------|----------|
+| 1 | [Malha_PID_temperatura](https://github.com/luisgustavoalmeida/Malha_PID_temperatura) | Modelagem física, simulação e grid search dos ganhos PID |
+| 2 | **Este repositório** | Firmware ESP32, hardware, testes de bancada e operação |
+
+Os ganhos PID (`Kp`, `Ki`, `Kd`) foram calibrados na simulação e portados para o ESP32, reduzindo tentativa e erro no hardware.
+
+---
+
 ## Características
 
 | Área | Detalhe |
@@ -55,6 +72,24 @@ O `README.md` resume instalação, pinagem e uso do firmware; o PDF aprofunda o 
 | **Monitoramento** | Cronômetro de uso e energia integrada (∫P·dt) com detecção de rede via zero-cross |
 | **Segurança** | Modo seguro em falha de sensor; desligamento automático por inatividade (40 min); boot em standby |
 | **Loop** | Arquitetura não bloqueante — tarefas periódicas independentes, sem `delay()` no `loop()` |
+
+---
+
+## Início rápido
+
+1. **Clone** o repositório e abra a pasta no Cursor, VS Code (PlatformIO) ou Arduino IDE.
+2. **Valide o hardware** com os sketches em [`testes_hardware/`](testes_hardware/) (buzzer → LCD → sensor → encoder).
+3. **Compile e grave** o firmware principal:
+
+   ```bash
+   pio run -t upload
+   pio device monitor -b 115200
+   ```
+
+4. **Energize a bancada** com carga controlada; confirme o indicador **on** (zero-cross) no LCD.
+5. **Clique no encoder** para ligar a malha; ajuste o setpoint girando o knob.
+
+> Boot padrão: malha **desligada** (`MALHA_INICIA_ATIVA = false`). Detalhes de instalação, bibliotecas e ambientes de build na seção [Instalação e compilação](#instalação-e-compilação).
 
 ---
 
@@ -93,7 +128,7 @@ flowchart LR
 
 O PID produz uma saída normalizada **0,0–1,0**, convertida em **0–100 %** de potência no dimmer. A histerese de temperatura (`BUZZER_HISTERESE_C`) afeta **apenas** o buzzer, o backlight e o indicador **Temp OK** no LCD — a malha continua regulando dentro da faixa.
 
-Ganhos PID calibrados no projeto irmão [`Malha_PID_temperatura`](../Malha_PID_temperatura) (portados de `pid_controller.py`):
+Ganhos PID calibrados na [Etapa 1 — Malha_PID_temperatura](https://github.com/luisgustavoalmeida/Malha_PID_temperatura) (portados de `pid_controller.py`):
 
 | Parâmetro | Valor |
 |-----------|-------|
@@ -135,7 +170,7 @@ Pinos reservados ou restritos: **0**, **2**, **15** (boot), **6–11** (flash SP
 
 ## Pinagem (GPIO)
 
-Valores definidos em [`config.h`](config.h). Diagrama de referência: `imagens/Imagem pinos ESP32.png` (se disponível no repositório).
+Valores definidos em [`config.h`](config.h). Consulte o pinout silkscreen do **NodeMCU-32S** ao montar a fiação.
 
 | Função | GPIO | Observação |
 |--------|------|------------|
@@ -247,7 +282,7 @@ Antes do firmware principal, valide cada periférico com os sketches em [`testes
 | Estado | Descrição |
 |--------|-----------|
 | `ESTADO_AGUARDE_SENSOR` | Aguardando primeira leitura válida |
-| `ESTADO_PID_ATIVO` | Regulação PID; animação `PID.` na linha 4 até meta |
+| `ESTADO_PID_ATIVO` | Regulação PID; animação `PID.` na linha inferior (linha 3) até meta |
 | `ESTADO_POTENCIA_ATIVO` | Modo potência manual ativo |
 | `ESTADO_CONTROLE_DESLIGADO` | Malha em standby — potência 0 % |
 | `ESTADO_SENSOR_ERRO` | Falha persistente — potência mínima forçada |
@@ -419,23 +454,33 @@ No boot, o firmware reporta pinos do dimmer, curva configurada e estado inicial:
 
 ```
 Controle_temperatura_ESP32/
-├── Controle_temperatura_ESP32.ino   # Programa principal
-├── Controle de Temperatura por Malha PID Embarcada - ESP32.pdf  # Artigo técnico detalhado
-├── config.h                         # Constantes globais
-├── pid_controller.cpp/h             # Controlador PID
-├── atuador_dimmer.cpp/h               # Dimmer TRIAC
-├── sensor_ds18b20.cpp/h               # Sensor DS18B20
-├── display_lcd.cpp/h                  # Display LCD
-├── encoder_rotativo.cpp/h             # Encoder rotativo
-├── buzzer.cpp/h                       # Buzzer
-├── medidor_uso.cpp/h                  # Cronômetro + energia
-├── lcd_i2c_compat.h                   # Compatibilidade LCD I2C
-├── platformio.ini                     # Build PlatformIO
-├── libraries/                         # OneWire local (ESP32 3.x)
-├── testes_hardware/                   # Sketches de validação
-└── README.md                          # Este arquivo
+├── Controle_temperatura_ESP32.ino                              # Programa principal
+├── Controle de Temperatura por Malha PID Embarcada - ESP32.pdf # Artigo técnico
+├── Imagem projeto.jpg                                            # Foto do protótipo concluído
+├── config.h                                                      # Constantes globais
+├── pid_controller.cpp/h                                          # Controlador PID
+├── atuador_dimmer.cpp/h                                          # Dimmer TRIAC
+├── sensor_ds18b20.cpp/h                                          # Sensor DS18B20
+├── display_lcd.cpp/h                                             # Display LCD
+├── encoder_rotativo.cpp/h                                      # Encoder rotativo
+├── buzzer.cpp/h                                                  # Buzzer
+├── medidor_uso.cpp/h                                             # Cronômetro + energia
+├── lcd_i2c_compat.h                                              # Compatibilidade LCD I2C
+├── platformio.ini                                                # Build PlatformIO
+├── libraries/                                                    # OneWire local (ESP32 3.x)
+│   └── README.md
+├── testes_hardware/                                              # Sketches de validação
+│   └── README.md
+└── README.md                                                     # Este arquivo
 ```
 
 ---
 
-**Desenvolvido para controle térmico de chuveiro elétrico com ESP32.** Ajuste os parâmetros em `config.h` conforme sua instalação e calibração de bancada.
+## Licença e contribuições
+
+Código-fonte aberto para estudo e adaptação. Ajuste os parâmetros em [`config.h`](config.h) conforme sua instalação e calibração de bancada.
+
+**Repositórios do projeto:**
+
+- Etapa 1 (simulação): [github.com/luisgustavoalmeida/Malha_PID_temperatura](https://github.com/luisgustavoalmeida/Malha_PID_temperatura)
+- Etapa 2 (firmware): [github.com/luisgustavoalmeida/Controle_temperatura_ESP32](https://github.com/luisgustavoalmeida/Controle_temperatura_ESP32)
