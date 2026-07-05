@@ -1,5 +1,5 @@
 /**
- * encoder_rotativo.cpp — Quadratura em ISR + debounce do botão
+ * encoder_rotativo.cpp — Quadratura e botão em ISR + debounce no loop
  *
  * Setpoint em ALVO_TEMP_* ou ALVO_POT_* (config.h).
  * Segurar 3 s sem girar troca modo; clique longo (~800 ms) reinicia PID no firmware principal.
@@ -34,7 +34,7 @@ static float ajustarPotenciaFino(float atual, int dir) {
 static volatile int8_t ultimoClk = 1;
 static EncoderRotativo* instancia = nullptr;
 
-void EncoderRotativo::isrEncoder() {
+void IRAM_ATTR EncoderRotativo::isrEncoder() {
   if (!instancia) {
     return;
   }
@@ -50,6 +50,15 @@ void EncoderRotativo::isrEncoder() {
     }
     ultimoClk = clk;
   }
+}
+
+void IRAM_ATTR EncoderRotativo::isrBotao() {
+  if (!instancia) {
+    return;
+  }
+  instancia->_botaoLeituraIsr = digitalRead(PINO_ENCODER_BOTAO);
+  instancia->_botaoBordaMs = millis();
+  instancia->_bordaBotaoPendente = true;
 }
 
 void EncoderRotativo::iniciar() {
@@ -75,10 +84,17 @@ void EncoderRotativo::iniciar() {
   _giroComBotaoPressionado = false;
   _trocaModoJaDisparou = false;
   _acumuladorDetente = 0;
+  _botaoEstavelPressionado = false;
+  _bordaBotaoPendente = false;
+  _botaoLeituraIsr = HIGH;
+  _botaoBordaMs = 0;
 
   ultimoClk = digitalRead(PINO_ENCODER_CLK);
+  _botaoEstavelPressionado = (digitalRead(PINO_ENCODER_BOTAO) == LOW);
+  _botaoEstavaPressionado = _botaoEstavelPressionado;
   instancia = this;
   attachInterrupt(digitalPinToInterrupt(PINO_ENCODER_CLK), isrEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PINO_ENCODER_BOTAO), isrBotao, CHANGE);
 }
 
 void EncoderRotativo::definirModoAjuste(ModoAjusteEncoder modo) {
@@ -147,9 +163,55 @@ void EncoderRotativo::aplicarPassoGiro(int passos, bool botaoPressionado) {
   }
 }
 
-void EncoderRotativo::atualizar() {
-  unsigned long agora = millis();
-  bool botao = (digitalRead(PINO_ENCODER_BOTAO) == LOW);
+void EncoderRotativo::registrarSoltarBotao(unsigned long agora, unsigned long duracao) {
+  if (_giroComBotaoPressionado || _trocaModoJaDisparou) {
+    _aguardandoPossivelDuplo = false;
+    return;
+  }
+  if (duracao < ENCODER_CLIQUE_MIN_MS) {
+    return;
+  }
+
+  if (duracao >= ENCODER_CLIQUE_LONGO_MS && duracao < ENCODER_TROCA_MODO_MS) {
+    _cliqueLongoPendente = true;
+    _aguardandoPossivelDuplo = false;
+    _cliquePendente = false;
+    return;
+  }
+
+  if (duracao > ENCODER_CLIQUE_MAX_MS) {
+    _aguardandoPossivelDuplo = false;
+    return;
+  }
+
+  if (_aguardandoPossivelDuplo &&
+      (agora - _millisUltimoSoltarBotao) <= ENCODER_DUPLO_CLIQUE_MS) {
+    _duploCliquePendente = true;
+    _aguardandoPossivelDuplo = false;
+    _cliquePendente = false;
+    return;
+  }
+
+  _aguardandoPossivelDuplo = true;
+  _millisUltimoSoltarBotao = agora;
+}
+
+void EncoderRotativo::processarBotao(unsigned long agora) {
+  if (_bordaBotaoPendente &&
+      (agora - _botaoBordaMs) >= ENCODER_BOTAO_DEBOUNCE_MS) {
+    _bordaBotaoPendente = false;
+    bool pressionado = (_botaoLeituraIsr == LOW);
+    if (pressionado != _botaoEstavelPressionado) {
+      _botaoEstavelPressionado = pressionado;
+    }
+  } else if (!_bordaBotaoPendente) {
+    bool leituraDireta = (digitalRead(PINO_ENCODER_BOTAO) == LOW);
+    if (leituraDireta != _botaoEstavelPressionado) {
+      _botaoEstavelPressionado = leituraDireta;
+    }
+  }
+
+  bool botao = _botaoEstavelPressionado;
 
   if (botao && !_botaoEstavaPressionado) {
     _millisBotaoPressionado = agora;
@@ -168,39 +230,22 @@ void EncoderRotativo::atualizar() {
   }
 
   if (!botao && _botaoEstavaPressionado) {
-    unsigned long duracao = agora - _millisBotaoPressionado;
-    if (!_giroComBotaoPressionado && !_trocaModoJaDisparou &&
-        duracao >= ENCODER_CLIQUE_MIN_MS) {
-      if (duracao >= ENCODER_CLIQUE_LONGO_MS &&
-          duracao < ENCODER_TROCA_MODO_MS) {
-        _cliqueLongoPendente = true;
-        _aguardandoPossivelDuplo = false;
-        _cliquePendente = false;
-      } else if (duracao <= ENCODER_CLIQUE_MAX_MS) {
-        if (_aguardandoPossivelDuplo &&
-            (agora - _millisUltimoSoltarBotao) < ENCODER_DUPLO_CLIQUE_MS) {
-          _duploCliquePendente = true;
-          _aguardandoPossivelDuplo = false;
-          _cliquePendente = false;
-        } else {
-          _aguardandoPossivelDuplo = true;
-          _millisUltimoSoltarBotao = agora;
-        }
-      } else {
-        _aguardandoPossivelDuplo = false;
-      }
-    } else {
-      _aguardandoPossivelDuplo = false;
-    }
+    registrarSoltarBotao(agora, agora - _millisBotaoPressionado);
     _giroComBotaoPressionado = false;
   }
   _botaoEstavaPressionado = botao;
 
   if (_aguardandoPossivelDuplo &&
-      (agora - _millisUltimoSoltarBotao) >= ENCODER_DUPLO_CLIQUE_MS) {
+      (agora - _millisUltimoSoltarBotao) > ENCODER_DUPLO_CLIQUE_MS) {
     _cliquePendente = true;
     _aguardandoPossivelDuplo = false;
   }
+}
+
+void EncoderRotativo::atualizar() {
+  unsigned long agora = millis();
+  processarBotao(agora);
+  bool botao = _botaoEstavelPressionado;
 
   noInterrupts();
   int d = _delta;

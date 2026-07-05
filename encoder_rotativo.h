@@ -1,6 +1,7 @@
 /**
  * encoder_rotativo.h — Encoder KY-040 (CLK, DT, SW)
  *
+ * Quadratura (CLK) e botão (SW) em ISR; debounce e gestos no loop.
  * Giro normal / fino (botao+giro), clique, duplo clique, clique longo e
  * segurar 3 s sem girar (troca modo PID ↔ potência).
  */
@@ -55,9 +56,17 @@ private:
   bool _trocaModoJaDisparou;
   int _acumuladorDetente;
 
+  volatile bool _botaoEstavelPressionado;
+  volatile bool _bordaBotaoPendente;
+  volatile int8_t _botaoLeituraIsr;
+  volatile unsigned long _botaoBordaMs;
+
+  void processarBotao(unsigned long agora);
+  void registrarSoltarBotao(unsigned long agora, unsigned long duracao);
   void aplicarPassoGiro(int passos, bool botaoPressionado);
 
   static void isrEncoder();
+  static void isrBotao();
 };
 
 #endif // ENCODER_ROTATIVO_H

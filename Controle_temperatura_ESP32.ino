@@ -65,6 +65,7 @@ bool controleMalhaAtivo = MALHA_INICIA_ATIVA;
 MensagemTransicao msgTransicao = MSG_NENHUMA;
 unsigned long msgTransicaoAteMs = 0;
 bool ultimoZcPresente = false;
+unsigned long momentoInicioSemZeroCross = 0;
 
 // Filtro de temperatura — tamanho em FILTRO_TEMP_AMOSTRAS (config.h)
 float historicoTemp[FILTRO_TEMP_AMOSTRAS];
@@ -347,6 +348,34 @@ void verificarDesligamentoAutomatico() {
   desligarMalhaControle(true);
 }
 
+/** Standby automático quando o chuveiro fica sem zero-cross por STANDBY_SEM_ZC_MS. */
+void verificarStandbyPorAusenciaZeroCross() {
+  if (!controleMalhaAtivo) {
+    momentoInicioSemZeroCross = 0;
+    return;
+  }
+
+  if (dimmer.redeComZeroCross()) {
+    momentoInicioSemZeroCross = 0;
+    return;
+  }
+
+  unsigned long agora = millis();
+  if (momentoInicioSemZeroCross == 0) {
+    momentoInicioSemZeroCross = agora;
+    return;
+  }
+
+  if ((agora - momentoInicioSemZeroCross) < STANDBY_SEM_ZC_MS) {
+    return;
+  }
+
+  buzzer.tocarConfirmacao();
+  Serial.println(F("[CTRL] Standby — chuveiro sem zero-cross por 10 min"));
+  desligarMalhaControle(false);
+  momentoInicioSemZeroCross = 0;
+}
+
 /** Standby: pot. 0 %; preserva saidaPid e estado do PID. */
 void desligarMalhaControle(bool porInatividade) {
   unsigned long agora = millis();
@@ -579,6 +608,7 @@ EstadoSistema obterEstadoParaDisplay() {
 void tarefaInterfaceUsuario() {
   buzzer.atualizar();
   verificarTransicaoZeroCross();
+  verificarStandbyPorAusenciaZeroCross();
   encoder.atualizar();
 
   if (controleMalhaAtivo && digitalRead(PINO_ENCODER_BOTAO) == LOW) {

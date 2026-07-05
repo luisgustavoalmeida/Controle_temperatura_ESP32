@@ -74,11 +74,11 @@
 // ===========================================================================
 
 /** Ganho proporcional — reação à diferença SP − PV (°C). */
-#define PID_GANHO_KP           0.03f
+#define PID_GANHO_KP           0.04f
 /** Ganho integral — corrige erro persistente (cuidado com overshoot). */
-#define PID_GANHO_KI           0.001f
+#define PID_GANHO_KI           0.0013f
 /** Ganho derivativo — amortecimento ante mudanças rápidas de PV. */
-#define PID_GANHO_KD           0.27f
+#define PID_GANHO_KD           0.375f
 
 /** Limites da saída do PID: 0 = potência mínima, 1 = potência máxima. */
 #define PID_SAIDA_MIN          0.0f
@@ -88,7 +88,7 @@
 #define ALVO_TEMP_MIN_C        10.0f
 #define ALVO_TEMP_MAX_C        45.0f
 /** Alvo exibido e aplicado ao ligar o equipamento [°C]. */
-#define ALVO_TEMP_PADRAO_C     38.0f
+#define ALVO_TEMP_PADRAO_C     40.0f
 
 /** Incremento por detente do encoder — giro normal [°C]. */
 #define ALVO_TEMP_PASSO_C      0.25f
@@ -107,10 +107,12 @@
  */
 #define ENCODER_CONTAGENS_POR_DETENTE  2
 
+/** Estabilização elétrica após borda do botão (ISR + debounce) [ms]. */
+#define ENCODER_BOTAO_DEBOUNCE_MS      20
 /** Janela máxima entre dois cliques para contar como duplo clique [ms]. */
-#define ENCODER_DUPLO_CLIQUE_MS        450
-/** Duração mínima para aceitar um clique (debounce) [ms]. */
-#define ENCODER_CLIQUE_MIN_MS          50
+#define ENCODER_DUPLO_CLIQUE_MS        500
+/** Duração mínima de pressão válida (abaixo = repique mecânico) [ms]. */
+#define ENCODER_CLIQUE_MIN_MS          20
 /** Duração máxima de um clique curto (acima disso = longo) [ms]. */
 #define ENCODER_CLIQUE_MAX_MS          450
 /** Segurar e soltar (sem girar) reinicia o PID no modo temperatura [ms]. */
@@ -283,7 +285,7 @@
 
 /**
  * Resolucao A/D do DS18B20 — escolha UMA linha (9, 10, 11 ou 12 bits).
- * Tempo de conversao e PERIODO_SENSOR_MS sao derivados automaticamente.
+ * Tempo de conversao; PERIODO_SENSOR_MS e PERIODO_PID_MS derivam daqui.
  *
  * | Bits | SENSOR_TEMPO_CONVERSAO_MS | Precisao tipica |
  * |------|---------------------------|-----------------|
@@ -310,7 +312,7 @@
  * Amostras na média móvel da temperatura antes do PID (Controle_temperatura_ESP32.ino).
  * 3 = suaviza ruído do DS18B20; aumente se o display/PID oscilar.
  */
-#define FILTRO_TEMP_AMOSTRAS       1
+#define FILTRO_TEMP_AMOSTRAS       3
 
 /**
  * Robustez da leitura DS18B20 (Controle_temperatura_ESP32.ino).
@@ -319,7 +321,7 @@
 #define SENSOR_FALHAS_ANTES_ERRO     4
 #define SENSOR_SUCESSOS_RECUPERACAO  2
 #define SENSOR_LEITURA_MIN_C         5.0f
-#define SENSOR_LEITURA_MAX_C         70.0f
+#define SENSOR_LEITURA_MAX_C         60.0f
 /** Salto maximo entre leituras consecutivas [C] — rejeita picos no barramento. */
 #define SENSOR_SALTO_MAXIMO_C        6.0f
 /** A cada N falhas, reescaneia o barramento 1-Wire (cabos soltos). */
@@ -329,14 +331,17 @@
 // 6. Períodos do loop principal [ms] e Serial
 // ===========================================================================
 
-/** Intervalo do cálculo PID e atualização do comando ao dimmer [ms]. */
-#define PERIODO_PID_MS             100
-
-/** Igual ao PID — sem atraso extra entre OUT e atualização do dimmer. */
-#define PERIODO_ATUADOR_DIMMER_MS  PERIODO_PID_MS
-
 /** Intervalo entre tentativas de leitura do DS18B20 (= tempo de conversao) [ms]. */
 #define PERIODO_SENSOR_MS          SENSOR_TEMPO_CONVERSAO_MS
+
+/**
+ * Intervalo do calculo PID e atualizacao do comando ao dimmer [ms].
+ * Igual ao sensor: um passo de controle por leitura nova (derivada coerente).
+ */
+#define PERIODO_PID_MS             PERIODO_SENSOR_MS
+
+/** Igual ao PID — sem atraso extra entre OUT e atualizacao do dimmer. */
+#define PERIODO_ATUADOR_DIMMER_MS  PERIODO_PID_MS
 
 /** Atualização do LCD (temperatura, % potência, estados) [ms]. */
 #define PERIODO_LCD_MS             100
@@ -360,7 +365,13 @@
  * Sem pulso de zero-cross por este tempo → rede/chuveiro considerados desligados
  * para o cronômetro e a energia (60 Hz ≈ 16,7 ms/ciclo; margem ~5 ciclos).
  */
-#define MEDIDOR_ZC_TIMEOUT_MS         80
+#define MEDIDOR_ZC_TIMEOUT_MS         160
+
+/**
+ * Com malha ligada: entra em standby (igual duplo clique) se o chuveiro/rede
+ * permanecer sem zero-cross por este tempo [ms]. 10 min = 10 × 60 × 1000.
+ */
+#define STANDBY_SEM_ZC_MS             (10UL * 60UL * 1000UL)
 
 /** Piscar backlight ao entrar/sair da meta (espelha duração do buzzer) [ms]. */
 #define LCD_PISCAR_META_LIGADO_MS     120
@@ -372,7 +383,7 @@
 
 /** Clique do encoder — pulso curto em micros (mais seco que millis). */
 #define BUZZ_CLIQUE_HZ               3000
-#define BUZZ_CLIQUE_US               2000UL
+#define BUZZ_CLIQUE_US               800UL
 
 /** Zero-cross: tom ao detectar chuveiro ligado (rede presente). */
 #define BUZZ_ZC_LIGADO_HZ            2200
